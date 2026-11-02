@@ -1,0 +1,25 @@
+{
+  "name": "puttline",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A mini golf game in the browser: nine holes, real ball physics. Three.js, Rapier and TypeScript.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --no-warnings --test \"tests/*.test.ts\"",
+    "check-holes": "node --experimental-strip-types --no-warnings scripts/check-holes.ts"
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.21.0",
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.1",
+    "@types/three": "0.186.0",
+    "typescript": "6.0.3",
+    "vite": "8.3.1"
+  }
+}

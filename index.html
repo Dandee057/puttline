@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#8fd0ec" />
+    <meta name="description" content="Puttline: nine holes of mini golf in your browser, with real ball physics. Built with Three.js, Rapier and TypeScript." />
+    <title>Puttline · Mini golf in your browser</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%234caf50'/%3E%3Cpath d='M28 14v32' stroke='white' stroke-width='4'/%3E%3Cpath d='M30 14l16 6-16 6z' fill='%23e53935'/%3E%3Ccircle cx='38' cy='46' r='6' fill='white'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  </head>
+  <body class="on-title">
+    <canvas id="game" aria-label="Mini golf course"></canvas>
+
+    <header class="hud" aria-live="polite">
+      <div class="brand">Puttline</div>
+      <div class="hole-info"><b id="hud-hole">Hole 1</b><span id="hud-name"></span></div>
+      <div class="score"><span id="hud-stroke">Stroke 1</span><span id="hud-par">Par 2</span><b id="hud-total">E</b></div>
+    </header>
+
+    <div class="hint gone" id="hint">Drag anywhere to aim · pull back for power · let go to putt</div>
+    <div class="meter" id="meter" aria-hidden="true"><i></i><span></span></div>
+
+    <nav class="controls" aria-label="Camera and game">
+      <button type="button" id="rot-left" aria-label="Turn the view left" title="Turn view (A)">⟲</button>
+      <button type="button" id="rot-right" aria-label="Turn the view right" title="Turn view (D)">⟳</button>
+      <button type="button" id="overview" aria-label="See the whole hole" title="Whole hole (O)">◎</button>
+      <button type="button" id="mute" aria-label="Sound on" title="Sound (M)">♪</button>
+      <button type="button" id="scorecard-btn" aria-label="Scorecard" title="Scorecard">▤</button>
+    </nav>
+
+    <div class="banner" id="banner" role="status"><b></b><span></span></div>
+    <div class="toast" id="toast" role="status"></div>
+
+    <section class="screen" id="title">
+      <div class="panel">
+        <p class="kicker">Nine holes · real ball physics</p>
+        <h1>Puttline</h1>
+        <p class="lede">Mini golf in your browser. Bank it off the rails, time the windmill, don't fall off the bridge.</p>
+        <button type="button" class="play" id="play">Play</button>
+        <p class="best" id="best"></p>
+        <ul class="how">
+          <li><b>Aim</b> Drag anywhere, pull back for power, let go to putt.</li>
+          <li><b>Look around</b> ⟲ ⟳ or A / D, right-drag, or two fingers. Scroll or pinch to zoom.</li>
+          <li><b>Whole hole</b> ◎ or O.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="screen hidden" id="card" aria-modal="true" role="dialog" aria-labelledby="card-title">
+      <div class="panel wide">
+        <h2 id="card-title">Scorecard</h2>
+        <div class="table-wrap"><table id="card-table"></table></div>
+        <p class="result" id="card-result"></p>
+        <div class="buttons">
+          <button type="button" class="play" id="card-again">Play again</button>
+          <button type="button" class="secondary" id="card-copy">Copy my score</button>
+          <button type="button" class="secondary" id="card-close">Back to the game</button>
+        </div>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
