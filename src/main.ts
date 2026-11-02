@@ -9,6 +9,7 @@ import { distanceField } from "./game/route.ts";
 import { isMuted, setMuted, sfx, unlockAudio } from "./audio.ts";
 import { Stage, yawFacing } from "./render/stage.ts";
 import { HoleView } from "./render/world.ts";
+import { themeFor } from "./render/themes.ts";
 
 /**
  * The game: one hole at a time. Physics runs at a fixed step, the picture at whatever the screen can do.
@@ -33,6 +34,7 @@ const game = {
   phase: "title" as Phase,
   index: 0,
   scores: [] as (number | undefined)[],
+  aces: [] as boolean[],
   strokes: 0,
   def: HOLES[0] as HoleDef,
   course: null as Course | null,
@@ -53,14 +55,16 @@ function loadHole(i: number): void {
   game.index = i; game.def = HOLES[i]; game.strokes = 0;
   game.course = buildHole(game.def);
   game.sim = new physics!.Sim(game.course, game.def);
-  game.view = new HoleView(game.course, game.def);
+  const theme = themeFor(game.def.theme);
+  game.view = new HoleView(game.course, game.def, theme);
   game.field = distanceField(game.course);
   stage.scene.add(game.view.group);
-  stage.frameShadows(game.course.bounds);
+  stage.setTheme(theme, game.course.bounds);
   game.overview = false; $("overview").setAttribute("aria-pressed", "false");
   game.phase = "intro"; game.introT = 0;
   hud();
-  banner(`Hole ${i + 1}`, `${game.def.name} · Par ${game.def.par}`, 2200);
+  banner(`Hole ${i + 1}`, `${game.def.name} · Par ${game.def.par} · ${theme.label}`, 2400);
+  if (game.def.shortcut) setTimeout(() => { if (game.index === i && game.strokes === 0) toast(`Risky shortcut: ${game.def.shortcut}. Hole in one or bust.`, 3600); }, 2600);
 }
 
 async function startCourse(): Promise<void> {
@@ -71,7 +75,7 @@ async function startCourse(): Promise<void> {
   }
   document.body.classList.remove("on-title");
   if (titleView) { stage.scene.remove(titleView.group); titleView.dispose(); titleView = null; }
-  game.scores = [];
+  game.scores = []; game.aces = [];
   $("title").classList.add("hidden");
   $("card").classList.add("hidden");
   loadHole(0);
@@ -80,13 +84,18 @@ async function startCourse(): Promise<void> {
 function finishHole(score: number, pickedUp = false): void {
   game.scores[game.index] = score;
   game.phase = "holed"; game.holedT = 0;
-  const name = pickedUp ? "Picked up" : scoreName(score, game.def.par);
+  // through the golden hole, or (on a jump hole, which has none) any hole in one
+  const ace = score === 1 && !pickedUp, viaShortcut = !!game.sim?.warped || !game.course?.gold;
+  const name = pickedUp ? "Picked up" : ace ? "HOLE IN ONE!" : scoreName(score, game.def.par);
   const t = totals(game.scores, PARS);
-  banner(name, `${score} stroke${score === 1 ? "" : "s"} · ${toPar(t.strokes, t.par)} overall`, 2600);
+  banner(name, `${ace && viaShortcut ? `${game.def.shortcut} · ` : ""}${score} stroke${score === 1 ? "" : "s"} · ${toPar(t.strokes, t.par)} overall`, ace ? 3200 : 2600);
+  $("banner").classList.toggle("gold", ace);
+  if (ace) game.aces[game.index] = true;
   if (!pickedUp) {
-    game.view!.celebrate();
+    game.view!.celebrate(ace);
     sfx.cup();
-    if (score < game.def.par) setTimeout(() => sfx.fanfare(), 450);
+    if (ace) setTimeout(() => sfx.ace(), 400);
+    else if (score < game.def.par) setTimeout(() => sfx.fanfare(), 450);
   }
   saveBest(game.index, score);
   hud();
@@ -120,7 +129,7 @@ function frame(now: number): void {
     stage.goal.yaw += dt * 0.08;
     stage.updateCamera(dt);
   }
-  stage.render(t);
+  stage.render(t, dt);
   requestAnimationFrame(frame);
 }
 
@@ -130,7 +139,9 @@ function handle(events: Event[]): void {
       if (e.what === "bumper") { sfx.bumper(); game.view!.flashBumper(); }
       else if (e.what === "blade" || e.what === "slider") sfx.thunk(e.speed);
       else sfx.wall(e.speed);
-    } else if (e.type === "sunk" && (game.phase === "rolling" || game.phase === "aim")) { aiming = null; meter(0, false); finishHole(game.strokes); }
+    } else if (e.type === "warp") { sfx.warp(); game.view!.sparkle("gold"); }
+    else if (e.type === "warped") game.view!.sparkle("cup");
+    else if (e.type === "sunk" && (game.phase === "rolling" || game.phase === "aim")) { aiming = null; meter(0, false); finishHole(game.strokes); }
     else if (e.type === "out" && game.phase === "rolling") {
       sfx.splash();
       game.strokes++;
@@ -178,6 +189,7 @@ function cameraFor(dt: number): void {
     const r = Math.hypot(b.x1 - b.x0, b.z1 - b.z0) / 2 + 0.6;
     const v = THREE.MathUtils.degToRad(stage.camera.fov) / 2, h = Math.atan(Math.tan(v) * stage.camera.aspect);
     stage.goal.target.copy(centre);
+    stage.goal.yaw = 0; // tee at the bottom, cup at the top
     stage.goal.pitch = 1.2;
     stage.goal.distance = r / Math.sin(Math.min(v, h));
   } else {
@@ -308,6 +320,7 @@ function toggleOverview(): void {
   if (game.phase === "intro") game.introT = 2.6;
   game.overview = !game.overview;
   $("overview").setAttribute("aria-pressed", String(game.overview));
+  if (!game.overview) faceTheWay(); // back behind the ball, looking the way to go
 }
 function toggleMute(): void {
   setMuted(!isMuted());
@@ -334,9 +347,9 @@ function banner(title: string, sub: string, ms: number): void {
   clearTimeout(bannerTimer); bannerTimer = window.setTimeout(() => el.classList.remove("on"), ms);
 }
 let toastTimer = 0;
-function toast(text: string): void {
+function toast(text: string, ms = 2200): void {
   const el = $("toast"); el.textContent = text; el.classList.add("on");
-  clearTimeout(toastTimer); toastTimer = window.setTimeout(() => el.classList.remove("on"), 2200);
+  clearTimeout(toastTimer); toastTimer = window.setTimeout(() => el.classList.remove("on"), ms);
 }
 let hinted = false;
 function hint(show: boolean): void {
@@ -359,7 +372,7 @@ function showCard(final: boolean): void {
   const you = `<tr class="total"><td>You</td>${HOLES.map((h, i) => {
     const s = game.scores[i];
     const cls = s === undefined ? (i === game.index && !final ? "now" : "") : s < h.par ? "under" : s > h.par ? "over" : "";
-    return `<td class="${cls}">${s ?? (i === game.index && !final ? "·" : "")}</td>`;
+    return `<td class="${cls}">${s ?? (i === game.index && !final ? "·" : "")}${game.aces[i] ? '<span class="star" title="Hole in one">★</span>' : ""}</td>`;
   }).join("")}<td>${played ? t.strokes : ""}</td></tr>`;
   const best = readBest();
   const bestRow = best.holes.some((x) => x) ? `<tr><td>Your best</td>${HOLES.map((_, i) => `<td>${best.holes[i] ?? ""}</td>`).join("")}<td>${best.total ?? ""}</td></tr>` : "";
@@ -376,7 +389,7 @@ function showCard(final: boolean): void {
 
 async function copyScore(): Promise<void> {
   const t = totals(game.scores, PARS);
-  const holes = game.scores.map((s, i) => (s! < PARS[i] ? "🟩" : s === PARS[i] ? "⬜" : "🟥")).join("");
+  const holes = game.scores.map((s, i) => (game.aces[i] ? "⭐" : s! < PARS[i] ? "🟩" : s === PARS[i] ? "⬜" : "🟥")).join("");
   const text = `Puttline ⛳ ${t.strokes} (${toPar(t.strokes, t.par)})\n${holes}\n${location.origin + location.pathname}`;
   try { await navigator.clipboard.writeText(text); toast("Score copied"); } catch { prompt("Copy your score:", text); }
 }
@@ -403,20 +416,28 @@ function saveBestTotal(): void {
 function showTitle(): void {
   const b = readBest();
   $("best").textContent = b.total != null ? `Your best round: ${b.total} (${toPar(b.total, PARS.reduce((a, c) => a + c, 0))})` : "";
-  // the first hole behind the title, slowly turning
-  const course = buildHole(HOLES[0]), view = new HoleView(course, HOLES[0]);
+  // the last hole behind the title, in space, slowly turning
+  const def = HOLES[HOLES.length - 1], theme = themeFor(def.theme);
+  const course = buildHole(def), view = new HoleView(course, def, theme);
   view.ball.visible = false;
   stage.scene.add(view.group);
-  stage.frameShadows(course.bounds);
+  stage.setTheme(theme, course.bounds);
   const b0 = course.bounds;
   stage.goal.target.set((b0.x0 + b0.x1) / 2, 0, (b0.z0 + b0.z1) / 2);
-  stage.goal.pitch = 0.7; stage.goal.distance = 22; stage.goal.yaw = 0.6;
+  stage.goal.pitch = 0.6; stage.goal.distance = 30; stage.goal.yaw = 0.6;
   stage.updateCamera(0, true);
   titleView = view;
 }
 let titleView: HoleView | null = null;
 addEventListener("resize", () => stage.resize());
 stage.resize();
+// ?debug: lets automated browser tests play an exact shot (the same ones the hole checker found)
+if (new URLSearchParams(location.search).has("debug")) {
+  (window as unknown as { puttline: object }).puttline = {
+    shoot: (dx: number, dz: number, power: number) => { if (game.phase === "intro") game.introT = 2.6; if (game.phase === "aim" || game.phase === "intro") { game.phase = "aim"; shoot(new THREE.Vector2(dx, dz), power); } },
+    state: () => ({ phase: game.phase, hole: game.index + 1, strokes: game.strokes, scores: game.scores, aces: game.aces })
+  };
+}
 // ?hole=5 jumps straight to a hole (handy for practice, and for testing)
 const jump = Number(new URLSearchParams(location.search).get("hole"));
 if (jump >= 1 && jump <= HOLES.length) { $("title").classList.add("hidden"); document.body.classList.remove("on-title"); game.scores = []; await physicsReady; loadHole(jump - 1); }

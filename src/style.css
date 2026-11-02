@@ -86,3 +86,7 @@ td.now { background: rgba(46, 125, 50, 0.1); border-radius: 6px; }
 
 /* Nothing but the title until a round starts */
 body.on-title .hud, body.on-title .controls, body.on-title .hint { display: none; }
+
+/* A hole in one gets a gold banner */
+.banner.gold b { color: #ffd54f; text-shadow: 0 4px 0 #a86b00, 0 0 30px rgba(255, 200, 60, 0.8), 0 10px 30px rgba(0, 0, 0, 0.25); }
+.star { color: #e0a800; font-size: 11px; margin-left: 1px; vertical-align: super; }

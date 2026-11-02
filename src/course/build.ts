@@ -11,6 +11,7 @@ export const RAIL_WIDTH = 0.24;
 export const BASE = -0.5;          // bottom of the slab
 export const CUP_RADIUS = 0.3;
 export const CUP_DEPTH = 0.42;
+export const GOLD_RADIUS = 0.25;   // barely wider than the ball: the shortcut has to be hit just right
 export const BUMPER_RADIUS = 0.34;
 const CUP_SEGMENTS = 32;           // a multiple of 8, so rays from the centre pass through the square's corners
 
@@ -33,6 +34,10 @@ export interface Course {
   windmills: Windmill[];
   tee: [number, number, number];
   hole: [number, number, number];
+  /** The golden hole, if this hole has one. */
+  gold: [number, number, number] | null;
+  /** Jump lips: the high edge of a ramp that runs out over the water. Drawn with a stripe. */
+  lips: { a: [number, number, number]; b: [number, number, number] }[];
   bounds: { x0: number; z0: number; x1: number; z1: number };
 }
 
@@ -73,6 +78,7 @@ export function buildGrid(grid: Grid): Course {
   const green = part(), cup = part(), sides = part(), skirt = part();
   const solids: Solid[] = [];
   const bumpers: Course["bumpers"] = [], windmills: Windmill[] = [];
+  const lips: Course["lips"] = [];
 
   for (const cell of grid.cells) {
     const h = cornerHeights(cell), k = corners(cell);
@@ -80,15 +86,19 @@ export function buildGrid(grid: Grid): Course {
     const [cx, cz] = cellCentre(cell), ch = (h[0] + h[1] + h[2] + h[3]) / 4;
 
     // The top of the square
-    if (cell.cup) cupCell(green, cup, cx, ch, cz);
+    if (cell.cup) cupCell(green, cup, cx, ch, cz, CUP_RADIUS);
+    else if (cell.gold) cupCell(green, cup, cx, ch, cz, GOLD_RADIUS);
     else quad(green, P(0), P(3), P(2), P(1));
 
     // Its four edges: rails against nothing, steps against a lower or higher neighbour
     SIDES.forEach((side, si) => {
       const nb = grid.at(cell.c + side.dc, cell.r + side.dr);
       const [i0, i1] = side.ends;
+      // the high end of a ramp running out to nothing is a jump: no rail
+      const lip = !nb && cell.ramp && h[i0] > 0 && h[i1] > 0 && Math.abs(h[i0] - h[i1]) < 1e-6 && h[i0] === Math.max(...h);
+      if (lip) lips.push({ a: P(i0), b: P(i1) });
       if (!nb) {
-        if (cell.bridge) { quad(skirt, P(i0), P(i1), [k[i1][0], BASE, k[i1][1]], [k[i0][0], BASE, k[i0][1]], [side.out[0], 0, side.out[1]]); return; }
+        if (cell.bridge || lip) { quad(skirt, P(i0), P(i1), [k[i1][0], BASE, k[i1][1]], [k[i0][0], BASE, k[i0][1]], [side.out[0], 0, side.out[1]]); return; }
         solids.push({ kind: "rail", points: rail(grid, cell, si, k[i0], k[i1], h[i0], h[i1]) });
         return;
       }
@@ -117,8 +127,9 @@ export function buildGrid(grid: Grid): Course {
 
   const xs = grid.cells.map((c) => c.c), zs = grid.cells.map((c) => c.r);
   const [tx, tz] = cellCentre(grid.tee), [hx, hz] = cellCentre(grid.cup);
+  const gold = grid.gold ? (() => { const [gx, gz] = cellCentre(grid.gold!); return [gx, cornerHeights(grid.gold!)[0], gz] as [number, number, number]; })() : null;
   return {
-    grid, green, cup, sides, skirt, solids, bumpers, windmills,
+    grid, green, cup, sides, skirt, solids, bumpers, windmills, gold, lips,
     tee: [tx, cornerHeights(grid.tee)[0], tz],
     hole: [hx, cornerHeights(grid.cup)[0], hz],
     bounds: { x0: Math.min(...xs) * CELL, z0: Math.min(...zs) * CELL, x1: (Math.max(...xs) + 1) * CELL, z1: (Math.max(...zs) + 1) * CELL }
@@ -126,12 +137,12 @@ export function buildGrid(grid: Grid): Course {
 }
 
 /** A square of green with a round hole in the middle, and the cup below it. */
-function cupCell(green: MeshPart, cup: MeshPart, cx: number, y: number, cz: number): void {
+function cupCell(green: MeshPart, cup: MeshPart, cx: number, y: number, cz: number, radius: number): void {
   const half = CELL / 2;
   const ring: V3[] = [], edge: V3[] = [];
   for (let i = 0; i < CUP_SEGMENTS; i++) {
     const a = (i / CUP_SEGMENTS) * Math.PI * 2, cs = Math.cos(a), sn = Math.sin(a);
-    ring.push([cx + CUP_RADIUS * cs, y, cz + CUP_RADIUS * sn]);
+    ring.push([cx + radius * cs, y, cz + radius * sn]);
     const s = half / Math.max(Math.abs(cs), Math.abs(sn)); // out along the same ray to the square's edge
     edge.push([cx + s * cs, y, cz + s * sn]);
   }

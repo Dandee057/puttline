@@ -76,6 +76,9 @@ export const sfx = {
     [0, 0.07, 0.13].forEach((d, i) => tone(900 - i * 120, 0.05, 0.25, "square", 500, d));
     [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, 0.5, 0.18, "sine", undefined, 0.22 + i * 0.09));
   },
+  /** Into the golden hole: a rising whoosh, then a chime as it drops into the cup. */
+  warp() { tone(220, 0.6, 0.22, "sine", 1760); noise(0.5, 0.15, "bandpass", 2400); },
+  ace() { [523.25, 659.25, 783.99, 1046.5, 1318.5, 1568].forEach((f, i) => { tone(f, 0.45, 0.16, "triangle", undefined, i * 0.08); tone(f * 2, 0.3, 0.05, "sine", undefined, i * 0.08 + 0.02); }); },
   splash() { noise(0.6, 0.5, "lowpass", 900); tone(300, 0.3, 0.1, "sine", 90); },
   fanfare() { [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => tone(f, 0.35, 0.16, "triangle", undefined, i * 0.1)); }
 };

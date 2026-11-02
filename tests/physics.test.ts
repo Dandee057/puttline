@@ -8,7 +8,8 @@ import { playShot, type Solution } from "../src/game/solver.ts";
 import { distanceField, remaining } from "../src/game/route.ts";
 
 await initPhysics();
-const first = HOLES[0], course = buildHole(first);
+// A plain straight hole for the physics tests, independent of the course design
+const first = { name: "Straight", par: 2, map: ["...", ".C.", "...", "...", "...", "...", ".T.", "..."] }, course = buildHole(first);
 
 test("the ball sits still on every tee", () => {
   for (const def of HOLES) {
@@ -60,7 +61,7 @@ test("off the side of the bridge is out of bounds, and the ball goes back where 
 });
 
 test("ramps: a soft putt rolls back down, a firm one makes it up", () => {
-  const def = HOLES.find((h) => h.name === "Step Up")!, c = buildHole(def);
+  const def = { name: "Ramp", par: 3, map: [":::", ":c:", ":::", "^^^", "...", "...", ".T.", "..."] }, c = buildHole(def);
   const weak = new Sim(c, def); weak.play(0, -1, 0.35);
   assert.ok(weak.ballPosition()[1] < 0.3);
   const firm = new Sim(c, def); firm.play(0, -1, 0.7);
@@ -92,7 +93,7 @@ test("the windmill blades and moving blocks move", () => {
 test("walking distance goes round the blocks", () => {
   const def = HOLES.find((h) => h.name === "Bank Shot")!, c = buildHole(def), f = distanceField(c);
   // from just below the blocks, straight up is blocked: the way round is longer than the straight line
-  const p: [number, number, number] = [3, 0.17, 9];
+  const p: [number, number, number] = [1, 0.17, 9];
   assert.ok(remaining(c, f, p) > Math.hypot(p[0] - c.hole[0], p[2] - c.hole[2]) + 2);
 });
 
@@ -107,6 +108,17 @@ test("every hole can be finished within par: the recorded shots still drop in", 
     for (const s of sol.shots) ({ state, pos, time } = playShot(c, def, pos, time, s));
     assert.equal(state, "sunk", `${def.name}: run npm run check-holes`);
   });
+});
+
+test("every hole has a risky route that can be a hole in one: the recorded shot still goes in", () => {
+  const sols: Solution[] = JSON.parse(readFileSync(new URL("./solutions.json", import.meta.url), "utf8"));
+  HOLES.forEach((def, i) => {
+    const c = buildHole(def), ace = sols[i].ace;
+    assert.ok(ace, `${def.name}: no hole in one recorded`);
+    const end = playShot(c, def, [c.tee[0], c.tee[1] + BALL_RADIUS, c.tee[2]], 0, ace!);
+    assert.equal(end.state, "sunk", `${def.name}: the shortcut no longer works`);
+    if (c.gold) assert.ok(end.warped, `${def.name}: went in, but not through the golden hole`);
+  });
   void DT;
 });
 
@@ -118,4 +130,37 @@ test("a ball that stops on the lip and then drops in still counts", () => {
   for (let i = 0; i < 600 && !sunk; i++) if (sim.step().some((e) => e.type === "sunk")) sunk = true;
   assert.ok(sunk);
   sim.free();
+});
+
+test("the golden hole sends the ball into the cup", () => {
+  const def = { name: "Gold", par: 3, map: ["...", ".C.", "...", "   ", " G ", " . ", " T ", " . "] }, c = buildHole(def);
+  const sim = new Sim(c, def);
+  const events: string[] = [];
+  sim.shoot(0, -1, 0.38);
+  for (let i = 0; i < 2400 && sim.state !== "sunk" && sim.state !== "out" && !(sim.state === "rest" && i > 10); i++) for (const e of sim.step()) events.push(e.type);
+  assert.ok(events.includes("warp") && events.includes("warped"), events.join());
+  assert.equal(sim.state, "sunk");
+  assert.ok(sim.warped);
+});
+
+test("too hard past the golden hole is in the water", () => {
+  const def = { name: "Gold", par: 3, map: ["...", ".C.", "...", "   ", " G ", " . ", " T ", " . "] }, c = buildHole(def);
+  const sim = new Sim(c, def);
+  assert.equal(sim.play(0, -1, 0.9), "out");
+});
+
+test("a ramp that runs out over the water is a jump: soft falls short, firm clears the gap", () => {
+  const def = { name: "Jump", par: 3, map: ["...", ".C.", "...", "   ", "^^^", "...", ".T.", "..."] }, c = buildHole(def);
+  assert.equal(c.lips.length, 3);
+  const short = new Sim(c, def); assert.equal(short.play(0, -1, 0.5), "out");
+  const clear = new Sim(c, def); const r = clear.play(0, -1, 0.7);
+  assert.ok(r === "rest" || r === "sunk");
+  assert.ok(clear.ballPosition()[2] < 6, "landed on the far side");
+});
+
+test("every part of every hole can reach the cup (no dead ends after a jump)", () => {
+  for (const def of HOLES) {
+    const c = buildHole(def), f = distanceField(c);
+    for (const cell of c.grid.cells) if (!cell.block) assert.ok(f.has(cell), `${def.name}: square ${cell.c},${cell.r} can't reach the cup`);
+  }
 });

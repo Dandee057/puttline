@@ -10,6 +10,10 @@
  *   #  solid block on the green
  *   _  bridge: green with no rails, so the ball can fall off
  *   W  windmill: its building blocks this square except for a tunnel; blades turn in front (towards +z)
+ *   G  golden hole: a small cup with no rails round it. Drop the ball in and it comes out in the real cup
+ *      (a hole in one); miss and it's likely in the water. g is the same on the raised level.
+ *
+ * A ramp whose high end runs out to nothing has no rail there: it's a jump.
  *   (space)  nothing: rails go round the edge, and a ball out here is out of bounds
  *
  * Moving blocks are listed separately, because they move across several squares.
@@ -30,6 +34,7 @@ export interface Cell {
   bumper?: boolean;
   block?: boolean;
   windmill?: boolean;
+  gold?: boolean;
   /** No rails along its open edges. */
   bridge?: boolean;
 }
@@ -43,9 +48,15 @@ export interface Slider {
   phase?: number;
 }
 
+export type ThemeName = "meadow" | "autumn" | "desert" | "arcade" | "tulips" | "city" | "ice" | "volcano" | "space";
+
 export interface HoleDef {
   name: string;
   par: number;
+  /** Look and scenery. */
+  theme?: ThemeName;
+  /** What the risky hole-in-one route is called, shown when the hole starts. */
+  shortcut?: string;
   map: string[];
   sliders?: Slider[];
   /** Windmill blade speed, turns per second. */
@@ -59,6 +70,7 @@ export interface Grid {
   at(c: number, r: number): Cell | undefined;
   tee: Cell;
   cup: Cell;
+  gold: Cell | null;
 }
 
 const RAMPS: Record<string, Dir> = { "^": "n", v: "s", "<": "w", ">": "e" };
@@ -69,7 +81,8 @@ export function parseHole(def: HoleDef): Grid {
   def.map.forEach((line, r) => [...line].forEach((ch, c) => {
     if (ch === " ") return;
     const cell: Cell = { c, r, ch, level: 0 };
-    if (ch === ":" || ch === "t" || ch === "c" || ch === "=") cell.level = 1;
+    if (ch === ":" || ch === "t" || ch === "c" || ch === "=" || ch === "g") cell.level = 1;
+    if (ch === "G" || ch === "g") { cell.gold = true; cell.bridge = true; }
     if (ch in RAMPS) cell.ramp = RAMPS[ch];
     if (ch === "T" || ch === "t") cell.tee = true;
     if (ch === "C" || ch === "c") cell.cup = true;
@@ -77,13 +90,14 @@ export function parseHole(def: HoleDef): Grid {
     if (ch === "#") cell.block = true;
     if (ch === "_" || ch === "=") cell.bridge = true;
     if (ch === "W") cell.windmill = true;
-    if (!".:TtCc^v<>o#_=W".includes(ch)) throw new Error(`${def.name}: unknown square "${ch}" at column ${c}, row ${r}`);
+    if (!".:TtCc^v<>o#_=WGg".includes(ch)) throw new Error(`${def.name}: unknown square "${ch}" at column ${c}, row ${r}`);
     cells.push(cell);
   }));
   const index = new Map(cells.map((x) => [`${x.c},${x.r}`, x]));
-  const tees = cells.filter((x) => x.tee), cups = cells.filter((x) => x.cup);
+  const tees = cells.filter((x) => x.tee), cups = cells.filter((x) => x.cup), golds = cells.filter((x) => x.gold);
   if (tees.length !== 1 || cups.length !== 1) throw new Error(`${def.name}: needs exactly one tee and one cup`);
-  return { cells, cols, rows, at: (c, r) => index.get(`${c},${r}`), tee: tees[0], cup: cups[0] };
+  if (golds.length > 1) throw new Error(`${def.name}: at most one golden hole`);
+  return { cells, cols, rows, at: (c, r) => index.get(`${c},${r}`), tee: tees[0], cup: cups[0], gold: golds[0] ?? null };
 }
 
 /**

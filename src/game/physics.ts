@@ -1,6 +1,6 @@
 import RAPIER from "@dimforge/rapier3d-compat";
-import { BUMPER_RADIUS, CUP_RADIUS, type Course, type MeshPart } from "../course/build.ts";
-import { CELL, cellCentre, cornerHeights, type HoleDef, type Slider } from "../course/parse.ts";
+import { BUMPER_RADIUS, CUP_DEPTH, CUP_RADIUS, GOLD_RADIUS, type Course, type MeshPart } from "../course/build.ts";
+import { CELL, cellCentre, cornerHeights, floorHeight, type HoleDef, type Slider } from "../course/parse.ts";
 
 /**
  * The ball and everything it can hit, simulated with Rapier at a fixed 120 steps a second. The same code runs in
@@ -19,9 +19,12 @@ const MAX_HOP = 1.1;                 // fastest the ball may rise over flat gree
 
 export type Event =
   | { type: "hit"; what: "rail" | "block" | "building" | "bumper" | "blade" | "slider"; speed: number }
-  | { type: "sunk" } | { type: "out" } | { type: "rest" };
+  | { type: "sunk" } | { type: "out" } | { type: "rest" }
+  /** Into the golden hole: the ball is in the tube for a moment, then drops into the cup. */
+  | { type: "warp" } | { type: "warped" };
 
-export type BallState = "rest" | "moving" | "sunk" | "out";
+export type BallState = "rest" | "moving" | "warp" | "sunk" | "out";
+const WARP_TIME = 0.7;
 
 let ready: Promise<void> | null = null;
 /** Rapier is WebAssembly: call this once before creating a Sim. */
@@ -45,9 +48,12 @@ export class Sim {
   /** Where the ball last came to rest: an out-of-bounds ball goes back here. */
   lastRest: [number, number, number];
   private still = 0;
+  private warpT = 0;
+  /** Whether the ball went through the golden hole on this shot. */
+  warped = false;
   private ground: RAPIER.Collider;
   private ballCollider: RAPIER.Collider;
-  private kinds = new Map<number, Exclude<Event, { type: "sunk" | "out" | "rest" }>["what"] | "green">();
+  private kinds = new Map<number, Extract<Event, { type: "hit" }>["what"] | "green">();
   private movers: Mover[] = [];
   private events = new RAPIER.EventQueue(true);
 
@@ -106,6 +112,7 @@ export class Sim {
   /** Hit the ball along (dx, dz) with power 0–1. */
   shoot(dx: number, dz: number, power: number): void {
     if (this.state !== "rest") return;
+    this.warped = false;
     const len = Math.hypot(dx, dz) || 1, v = Math.max(0.05, Math.min(1, power)) * MAX_SPEED;
     const p = this.ball.translation();
     this.lastRest = [p.x, p.y, p.z];
@@ -154,11 +161,35 @@ export class Sim {
     });
 
     if (this.state === "sunk" || this.state === "out") return out;
+    if (this.state === "warp") {
+      // in the tube: after a moment it drops into the cup from just above it
+      this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      if ((this.warpT += DT) >= WARP_TIME) {
+        const [hx, hy, hz] = this.course.hole;
+        this.ball.setTranslation({ x: hx, y: hy + 0.9, z: hz }, true);
+        this.ball.setLinvel({ x: 0, y: -1, z: 0 }, true);
+        this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        this.ball.setGravityScale(1, true);
+        this.state = "moving";
+        out.push({ type: "warped" });
+      }
+      return out;
+    }
     // In the cup: below the green and inside its rim. Checked even at rest: a ball can stop on the lip and drop.
     const p = this.ball.translation(), v = this.ball.linvel();
     const [hx, hy, hz] = this.course.hole;
-    if (p.y < hy - BALL_RADIUS * 0.6 && Math.hypot(p.x - hx, p.z - hz) < CUP_RADIUS) {
+    // (inside the cup, not just somewhere below it: a ball that fell off the course can pass underneath)
+    const inside = (y: number) => p.y < y - BALL_RADIUS * 0.6 && p.y > y - CUP_DEPTH;
+    if (inside(hy) && Math.hypot(p.x - hx, p.z - hz) < CUP_RADIUS) {
       this.state = "sunk"; out.push({ type: "sunk" }); return out;
+    }
+    const g = this.course.gold;
+    if (g && inside(g[1]) && Math.hypot(p.x - g[0], p.z - g[2]) < GOLD_RADIUS) {
+      this.state = "warp"; this.warpT = 0; this.warped = true;
+      this.ball.setGravityScale(0, true);
+      this.ball.setTranslation({ x: g[0], y: g[1] - 1, z: g[2] }, true); // out of sight, down the tube
+      out.push({ type: "warp" });
+      return out;
     }
     if (this.state === "rest") { this.holdStill(); return out; }
     this.limitHop();
@@ -167,8 +198,8 @@ export class Sim {
       this.state = "out"; out.push({ type: "out" }); return out;
     }
     const speed = Math.hypot(v.x, v.y, v.z);
-    // never "stopped" while hanging over the cup: let it drop
-    const overCup = Math.hypot(p.x - hx, p.z - hz) < CUP_RADIUS;
+    // never "stopped" while hanging over a cup: let it drop
+    const overCup = Math.hypot(p.x - hx, p.z - hz) < CUP_RADIUS || (!!g && Math.hypot(p.x - g[0], p.z - g[2]) < GOLD_RADIUS);
     this.still = speed < REST_SPEED && grounded && !overCup ? this.still + DT : 0;
     if (this.still >= REST_TIME) {
       this.place([p.x, p.y, p.z]);
@@ -181,7 +212,7 @@ export class Sim {
   /** Run a whole shot to its end, for the tests and the hole checker. */
   play(dx: number, dz: number, power: number, maxSeconds = 20): BallState {
     this.shoot(dx, dz, power);
-    for (let t = 0; t < maxSeconds && this.state === "moving"; t += DT) this.step();
+    for (let t = 0; t < maxSeconds && (this.state === "moving" || this.state === "warp"); t += DT) this.step();
     if (this.state === "moving") { const p = this.ball.translation(); this.place([p.x, p.y, p.z]); }
     return this.state;
   }
@@ -233,6 +264,8 @@ export class Sim {
   private limitHop(): void {
     const p = this.ball.translation(), cell = this.course.grid.at(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
     if (!cell || cell.ramp) return;
+    // only right at grass level, where the contacts are: a ball in the air (off a jump) flies freely
+    if (p.y - floorHeight(cell, p.x, p.z) > BALL_RADIUS + 0.12) return;
     const v = this.ball.linvel();
     if (v.y > MAX_HOP) this.ball.setLinvel({ x: v.x, y: MAX_HOP, z: v.z }, true);
   }

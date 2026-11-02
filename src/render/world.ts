@@ -1,27 +1,26 @@
 import * as THREE from "three";
 import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js";
-import { BUMPER_RADIUS, CUP_RADIUS, type Course, type MeshPart } from "../course/build.ts";
+import { BUMPER_RADIUS, CUP_RADIUS, GOLD_RADIUS, type Course, type MeshPart } from "../course/build.ts";
 import { CELL, type HoleDef } from "../course/parse.ts";
 import { BALL_RADIUS, type Sim } from "../game/physics.ts";
+import type { Theme } from "./themes.ts";
 
 /**
- * What you see: the course drawn from the same triangles the ball rolls on, plus the ball, the flag, moving parts,
- * the aiming arrow and a few effects. A HoleView is built per hole and thrown away after it.
+ * What you see: the course drawn from the same triangles the ball rolls on, in the hole's theme, plus the ball,
+ * the flag, moving parts, the golden hole, glowing trim, the aiming arrow and effects. Built per hole.
  */
 
-export const COLORS = {
-  sky: "#bfe3f2", horizon: "#f6efe2", water: "#5fb3c9",
-  green: "#4caf50", greenDark: "#43a047", side: "#8d6e63", rail: "#f4ead8", railTop: "#e9dcc4",
-  block: "#ef7d57", building: "#fbf7ef", roof: "#d6453d", blade: "#fbf7ef", slider: "#ffb300",
-  bumper: "#ec4899", ball: "#ffffff", cup: "#2b2b2b", flag: "#e53935"
-};
+const GOLD = "#ffc83d";
 
-/** Mown stripes, one light and one dark band per square. */
-function greenTexture(): THREE.Texture {
+/** Mown stripes in the theme's two greens, one light and one dark band per square. */
+const greenTextures = new Map<string, THREE.Texture>();
+function greenTexture([light, dark]: [string, string]): THREE.Texture {
+  const key = light + dark;
+  if (greenTextures.has(key)) return greenTextures.get(key)!;
   const c = document.createElement("canvas"); c.width = c.height = 128;
   const g = c.getContext("2d")!;
-  g.fillStyle = COLORS.green; g.fillRect(0, 0, 128, 128);
-  g.fillStyle = COLORS.greenDark; g.fillRect(0, 64, 128, 64);
+  g.fillStyle = light; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = dark; g.fillRect(0, 64, 128, 64);
   // a little speckle so it reads as grass, not plastic
   for (let i = 0; i < 900; i++) {
     g.fillStyle = `rgba(${Math.random() < 0.5 ? "255,255,255" : "0,40,0"},${Math.random() * 0.06})`;
@@ -29,9 +28,23 @@ function greenTexture(): THREE.Texture {
   }
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  greenTextures.set(key, t);
   return t;
 }
-let greenTex: THREE.Texture | null = null;
+
+/** Yellow and black chevrons for the edge of a jump. */
+let hazardTex: THREE.Texture | null = null;
+function hazardTexture(): THREE.Texture {
+  if (hazardTex) return hazardTex;
+  const c = document.createElement("canvas"); c.width = 64; c.height = 16;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#ffd600"; g.fillRect(0, 0, 64, 16);
+  g.fillStyle = "#1b1b1b";
+  for (let x = -16; x < 64; x += 16) { g.beginPath(); g.moveTo(x, 16); g.lineTo(x + 8, 16); g.lineTo(x + 16, 0); g.lineTo(x + 8, 0); g.fill(); }
+  hazardTex = new THREE.CanvasTexture(c);
+  hazardTex.wrapS = THREE.RepeatWrapping; hazardTex.colorSpace = THREE.SRGBColorSpace;
+  return hazardTex;
+}
 
 function geometry(m: MeshPart, uv = false): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
@@ -47,6 +60,16 @@ function geometry(m: MeshPart, uv = false): THREE.BufferGeometry {
 }
 
 const std = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.8, ...extra });
+/** A colour bright enough to bloom: unaffected by tone mapping. */
+const neon = (color: string, k = 1.6, opacity = 1) => new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(k), toneMapped: false, transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
+
+/** A thin bar from a to b. */
+function bar(a: THREE.Vector3, b: THREE.Vector3, thick: number, m: THREE.Material): THREE.Mesh {
+  const len = a.distanceTo(b), mesh = new THREE.Mesh(new THREE.BoxGeometry(thick, thick, len), m);
+  mesh.position.copy(a).add(b).multiplyScalar(0.5);
+  mesh.lookAt(b);
+  return mesh;
+}
 
 export class HoleView {
   readonly group = new THREE.Group();
@@ -56,63 +79,115 @@ export class HoleView {
   private blades: THREE.Group[] = [];
   private sliders: THREE.Mesh[] = [];
   private bumpers: { mesh: THREE.Mesh; flash: number }[] = [];
-  private trail: THREE.Line;
+  private trail: THREE.Mesh;
   private trailPts: THREE.Vector3[] = [];
   readonly aim: THREE.Group;
   private aimShaft: THREE.Mesh;
   private aimHead: THREE.Mesh;
   private confetti: Confetti;
   private course: Course;
+  private theme: Theme;
   private flagLift = 0;
+  private beacon: THREE.Mesh;
+  private gold: THREE.Group | null = null;
+  private goldSparks: THREE.InstancedMesh | null = null;
+  private tmp = new THREE.Object3D();
 
-  constructor(course: Course, def: HoleDef) {
-    this.course = course;
-    greenTex ??= greenTexture();
-    const add = (o: THREE.Object3D, shadows: [boolean, boolean] = [true, true]) => { o.castShadow = shadows[0]; o.receiveShadow = shadows[1]; this.group.add(o); return o; };
+  constructor(course: Course, def: HoleDef, theme: Theme) {
+    this.course = course; this.theme = theme;
+    const night = theme.bloom >= 0.8;
+    const add = <T extends THREE.Object3D>(o: T, shadows: [boolean, boolean] = [true, true]) => { o.castShadow = shadows[0]; o.receiveShadow = shadows[1]; this.group.add(o); return o; };
 
-    add(new THREE.Mesh(geometry(course.green, true), std("#ffffff", { map: greenTex, roughness: 0.95 })), [false, true]);
-    add(new THREE.Mesh(geometry(course.cup), std(COLORS.cup, { side: THREE.DoubleSide, roughness: 1 })), [false, true]);
-    add(new THREE.Mesh(geometry(course.sides), std(COLORS.side, { side: THREE.DoubleSide })));
-    add(new THREE.Mesh(geometry(course.skirt), std(COLORS.side, { side: THREE.DoubleSide })));
+    add(new THREE.Mesh(geometry(course.green, true), std("#ffffff", { map: greenTexture(theme.green), roughness: 0.95 })), [false, true]);
+    add(new THREE.Mesh(geometry(course.cup), std("#1e1e1e", { side: THREE.DoubleSide, roughness: 1 })), [false, true]);
+    add(new THREE.Mesh(geometry(course.sides), std(theme.side, { side: THREE.DoubleSide })));
+    add(new THREE.Mesh(geometry(course.skirt), std(theme.side, { side: THREE.DoubleSide })));
 
-    const mats = { rail: std(COLORS.rail, { roughness: 0.6 }), block: std(COLORS.block, { roughness: 0.55 }), building: std(COLORS.building, { roughness: 0.7 }) };
+    const mats = {
+      rail: std(theme.rail, { roughness: 0.55 }),
+      block: std(theme.block, { roughness: 0.5, emissive: theme.block, emissiveIntensity: night ? 0.35 : 0 }),
+      building: std(theme.building, { roughness: 0.7 })
+    };
+    const trim = neon(theme.trim, 0.6 + theme.trimGlow * 0.5);
     for (const s of course.solids) {
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i < s.points.length; i += 3) pts.push(new THREE.Vector3(s.points[i], s.points[i + 1], s.points[i + 2]));
       add(new THREE.Mesh(new ConvexGeometry(pts), mats[s.kind]));
+      // A glowing strip along the inner top edge of every rail (points 1 and 5: inner side, top, at each end)
+      if (s.kind === "rail") add(bar(pts[1].clone().setY(pts[1].y + 0.01), pts[5].clone().setY(pts[5].y + 0.01), 0.05, trim), [false, false]);
     }
 
-    // A white ring round the cup, and the flag
+    // Jump lips get hazard stripes, lying on the ramp just inside the edge
+    for (const lip of course.lips) {
+      const A = new THREE.Vector3(...lip.a), B = new THREE.Vector3(...lip.b), len = A.distanceTo(B);
+      let n = new THREE.Vector3(B.z - A.z, 0, -(B.x - A.x)).normalize();
+      const mid = A.clone().add(B).multiplyScalar(0.5).addScaledVector(n, 0.3);
+      if (!course.grid.at(Math.floor(mid.x / CELL), Math.floor(mid.z / CELL))) n = n.negate(); // point onto the ramp
+      const w = 0.24, drop = w * (0.6 / CELL), up = 0.006; // the ramp falls 0.6 over a square
+      const C = B.clone().addScaledVector(n, w).setY(B.y - drop), D = A.clone().addScaledVector(n, w).setY(A.y - drop);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute([A, B, C, D].flatMap((v) => [v.x, v.y + up, v.z]), 3));
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute([0, 1, len / 0.5, 1, len / 0.5, 0, 0, 0], 2));
+      geo.setIndex([0, 1, 2, 0, 2, 3]);
+      geo.computeVertexNormals();
+      add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: hazardTexture(), roughness: 0.6, side: THREE.DoubleSide })), [false, true]);
+    }
+
+    // The cup: a white rim, the flag, and a beacon of light so you can always see where it is
     const [hx, hy, hz] = course.hole;
-    const rim = add(new THREE.Mesh(new THREE.RingGeometry(CUP_RADIUS, CUP_RADIUS + 0.04, 40), new THREE.MeshBasicMaterial({ color: "#ffffff" })), [false, false]);
+    const rim = add(new THREE.Mesh(new THREE.RingGeometry(CUP_RADIUS, CUP_RADIUS + 0.045, 40), neon("#ffffff", 1.1)), [false, false]);
     rim.rotation.x = -Math.PI / 2; rim.position.set(hx, hy + 0.003, hz);
     this.flag = this.makeFlag();
     this.flag.position.set(hx, hy, hz);
     this.group.add(this.flag);
+    this.beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 14, 24, 1, true).translate(0, 7, 0),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.accent), transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+    this.beacon.position.set(hx, hy, hz);
+    add(this.beacon, [false, false]);
+
+    // The golden hole: a glowing gold ring, a gold tube, sparkles going round it
+    if (course.gold) {
+      const [gx, gy, gz] = course.gold;
+      this.gold = new THREE.Group();
+      this.gold.position.set(gx, gy, gz);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(GOLD_RADIUS + 0.03, 0.035, 10, 40), neon(GOLD, 2.2));
+      ring.rotation.x = Math.PI / 2; ring.position.y = 0.02;
+      const inside = new THREE.Mesh(new THREE.CylinderGeometry(GOLD_RADIUS * 0.99, GOLD_RADIUS * 0.99, 0.4, 32, 1, true).translate(0, -0.2, 0), new THREE.MeshStandardMaterial({ color: GOLD, metalness: 0.9, roughness: 0.25, side: THREE.BackSide, emissive: GOLD, emissiveIntensity: 0.3 }));
+      const halo = new THREE.Mesh(new THREE.CircleGeometry(0.9, 40), new THREE.MeshBasicMaterial({ color: GOLD, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+      halo.rotation.x = -Math.PI / 2; halo.position.y = 0.006;
+      this.gold.add(ring, inside, halo);
+      this.group.add(this.gold);
+      this.goldSparks = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.045, 0), neon("#fff2b0", 2.5), 14);
+      this.goldSparks.frustumCulled = false;
+      this.group.add(this.goldSparks);
+    }
 
     // Tee marker
-    const tee = add(new THREE.Mesh(new THREE.CircleGeometry(0.32, 32), new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.35 })), [false, false]);
+    const tee = add(new THREE.Mesh(new THREE.RingGeometry(0.26, 0.34, 32), neon(theme.accent, 1, 0.5)), [false, false]);
     tee.rotation.x = -Math.PI / 2; tee.position.set(course.tee[0], course.tee[1] + 0.003, course.tee[2]);
 
     for (const b of course.bumpers) {
-      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(BUMPER_RADIUS, BUMPER_RADIUS, 0.5, 32), std(COLORS.bumper, { roughness: 0.3, emissive: COLORS.bumper, emissiveIntensity: 0 }));
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(BUMPER_RADIUS, BUMPER_RADIUS, 0.5, 32), std(theme.bumper, { roughness: 0.3, emissive: theme.bumper, emissiveIntensity: night ? 0.35 : 0.1 }));
       mesh.position.set(b.x, b.y + 0.25, b.z); add(mesh);
-      const cap = new THREE.Mesh(new THREE.CylinderGeometry(BUMPER_RADIUS * 0.55, BUMPER_RADIUS * 0.55, 0.52, 24), std("#ffffff", { roughness: 0.3 }));
-      cap.position.copy(mesh.position); add(cap);
+      const cap = new THREE.Mesh(new THREE.TorusGeometry(BUMPER_RADIUS * 0.75, 0.04, 8, 32), neon(night ? theme.trim : "#ffffff", night ? 1.2 : 1));
+      cap.rotation.x = Math.PI / 2; cap.position.set(b.x, b.y + 0.51, b.z); add(cap, [false, false]);
       this.bumpers.push({ mesh, flash: 0 });
     }
 
     for (const w of course.windmills) {
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(1.35, 0.9, 4), std(COLORS.roof, { roughness: 0.6 }));
+      const roof = new THREE.Mesh(new THREE.ConeGeometry(1.35, 0.9, 4), std(theme.roof, { roughness: 0.6 }));
       roof.rotation.y = Math.PI / 4; roof.position.set(w.x, w.hubY - 1.5 + 1.25 + 0.45, w.z); add(roof);
       const blades = new THREE.Group();
       blades.position.set(w.x, w.hubY, w.hubZ);
-      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.16, 16), std(COLORS.roof));
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.16, 16), std(theme.roof));
       hub.rotation.x = Math.PI / 2; blades.add(hub);
       for (let i = 0; i < 4; i++) {
         const a = (i * Math.PI) / 2, half = w.bladeLength / 2;
-        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.26, w.bladeLength, 0.1), std(i % 2 ? COLORS.roof : COLORS.blade, { roughness: 0.6 }));
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.26, w.bladeLength, 0.1), std(i % 2 ? theme.roof : theme.building, { roughness: 0.6 }));
         blade.position.set(-Math.sin(a) * half, Math.cos(a) * half, 0); blade.rotation.z = a; blade.castShadow = true;
+        // lights along each blade
+        const strip = new THREE.Mesh(new THREE.BoxGeometry(0.05, w.bladeLength * 0.85, 0.02), neon(theme.trim, 1.2));
+        strip.position.z = 0.06; blade.add(strip);
         blades.add(blade);
       }
       this.group.add(blades); this.blades.push(blades);
@@ -120,24 +195,27 @@ export class HoleView {
 
     for (const s of def.sliders ?? []) {
       const alongX = s.from[1] === s.to[1];
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 1.8 : 0.7, 0.52, alongX ? 0.7 : 1.8), std(COLORS.slider, { roughness: 0.5 }));
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(alongX ? 1.8 : 0.7, 0.52, alongX ? 0.7 : 1.8), std(theme.slider, { roughness: 0.45, emissive: theme.slider, emissiveIntensity: night ? 0.4 : 0.05 }));
+      // warning lights on top
+      for (const x of [-0.6, 0.6]) { const l = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), neon("#ff1744", 2.5)); l.position.set(alongX ? x : 0, 0.3, alongX ? 0 : x); mesh.add(l); }
       add(mesh); this.sliders.push(mesh);
     }
 
-    this.ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_RADIUS, 32, 20), std(COLORS.ball, { roughness: 0.35 }));
+    this.ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_RADIUS, 32, 20), std("#ffffff", { roughness: 0.35, emissive: "#ffffff", emissiveIntensity: night ? 0.12 : 0 }));
     this.ball.castShadow = true;
     // a stripe so you can see it roll
     const stripe = new THREE.Mesh(new THREE.TorusGeometry(BALL_RADIUS * 1.001, 0.012, 6, 40), new THREE.MeshBasicMaterial({ color: "#ff7043" }));
     this.ball.add(stripe);
     this.group.add(this.ball);
 
-    this.trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.5 }));
+    // The trail: a glowing ribbon behind the rolling ball
+    this.trail = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.accent).multiplyScalar(1.5), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, vertexColors: true }));
     this.trail.frustumCulled = false;
     this.group.add(this.trail);
 
     // The aiming arrow: a shaft and a head lying on the green, scaled by power
     this.aim = new THREE.Group();
-    const arrowMat = new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.9, depthWrite: false });
+    const arrowMat = new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.95, depthWrite: false, toneMapped: false });
     this.aimShaft = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 1).translate(0, 0.5, 0), arrowMat);
     const head = new THREE.Shape(); head.moveTo(-0.24, 0); head.lineTo(0.24, 0); head.lineTo(0, 0.38); head.lineTo(-0.24, 0);
     this.aimHead = new THREE.Mesh(new THREE.ShapeGeometry(head), arrowMat);
@@ -155,7 +233,7 @@ export class HoleView {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 2.2, 8), std("#f5f5f5", { roughness: 0.4 }));
     pole.position.y = 1.1; pole.castShadow = true; g.add(pole);
     const geo = new THREE.PlaneGeometry(0.75, 0.48, 16, 4).translate(0.375, 0, 0);
-    const mat = std(COLORS.flag, { side: THREE.DoubleSide, roughness: 0.7 });
+    const mat = std("#e53935", { side: THREE.DoubleSide, roughness: 0.7, emissive: "#e53935", emissiveIntensity: this.theme.bloom >= 0.8 ? 0.5 : 0 });
     // The flag waves: a small vertex shader change, stronger towards the free end
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.time = { value: 0 };
@@ -169,6 +247,8 @@ export class HoleView {
     };
     const flag = new THREE.Mesh(geo, mat);
     flag.position.y = 1.95; flag.castShadow = true; g.add(flag);
+    const top = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), neon(GOLD, 1.8));
+    top.position.y = 2.22; g.add(top);
     return g;
   }
 
@@ -177,34 +257,67 @@ export class HoleView {
     const p = sim.ballPosition(), q = sim.ballRotation();
     this.ball.position.set(p[0], p[1], p[2]);
     this.ball.quaternion.set(q.x, q.y, q.z, q.w);
+    this.ball.visible = sim.state !== "warp";
 
-    sim.moverStates().forEach((m, i) => {
-      if (m.kind === "blade") this.blades[i]?.quaternion.set(m.rotation.x, m.rotation.y, m.rotation.z, m.rotation.w);
-    });
-    let si = 0;
-    for (const m of sim.moverStates()) if (m.kind === "slider") this.sliders[si++]?.position.set(m.position.x, m.position.y, m.position.z);
+    let bi = 0, si = 0;
+    for (const m of sim.moverStates()) {
+      if (m.kind === "blade") this.blades[bi++]?.quaternion.set(m.rotation.x, m.rotation.y, m.rotation.z, m.rotation.w);
+      else this.sliders[si++]?.position.set(m.position.x, m.position.y, m.position.z);
+    }
 
     if (this.flagShader) this.flagShader.uniforms.time.value = t;
-    // The flag lifts out as the ball gets close, like a caddie pulling it
-    const [hx, , hz] = this.course.hole, near = Math.hypot(p[0] - hx, p[2] - hz) < 2.4 && sim.state === "moving";
+    // The flag lifts out as the ball gets close, like a caddie pulling it; the beacon fades as you approach
+    const [hx, , hz] = this.course.hole, dist = Math.hypot(p[0] - hx, p[2] - hz);
+    const near = dist < 2.4 && (sim.state === "moving" || sim.state === "warp");
     this.flagLift += ((near ? 1 : 0) - this.flagLift) * Math.min(1, dt * 5);
     this.flag.position.y = this.course.hole[1] + this.flagLift * 1.4;
     (this.flag.children as THREE.Mesh[]).forEach((c) => { const m = c.material as THREE.MeshStandardMaterial; m.transparent = true; m.opacity = 1 - this.flagLift * 0.85; });
+    (this.beacon.material as THREE.MeshBasicMaterial).opacity = Math.min(0.09, Math.max(0, (dist - 3) / 40)) * (0.8 + Math.sin(t * 2) * 0.2);
 
     for (const b of this.bumpers) {
       b.flash = Math.max(0, b.flash - dt * 4);
-      (b.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = b.flash * 0.9;
-      b.mesh.scale.setScalar(1 + b.flash * 0.12);
+      const m = b.mesh.material as THREE.MeshStandardMaterial;
+      m.emissiveIntensity = (this.theme.bloom >= 0.8 ? 0.35 : 0.1) + b.flash * 1.6;
+      b.mesh.scale.set(1 + b.flash * 0.15, 1, 1 + b.flash * 0.15);
     }
 
-    // trail while the ball is moving
+    if (this.gold && this.goldSparks) {
+      const pulse = 1 + Math.sin(t * 4) * 0.08;
+      this.gold.children[0].scale.setScalar(pulse);
+      for (let i = 0; i < 14; i++) {
+        const a = t * 1.6 + (i / 14) * Math.PI * 2, r = 0.45 + Math.sin(t * 2 + i) * 0.08;
+        this.tmp.position.set(this.gold.position.x + Math.cos(a) * r, this.gold.position.y + 0.15 + ((t * 0.5 + i / 14) % 1) * 0.8, this.gold.position.z + Math.sin(a) * r);
+        this.tmp.rotation.set(t * 3 + i, t * 2, 0);
+        this.tmp.scale.setScalar(1 - ((t * 0.5 + i / 14) % 1));
+        this.tmp.updateMatrix(); this.goldSparks.setMatrixAt(i, this.tmp.matrix);
+      }
+      this.goldSparks.instanceMatrix.needsUpdate = true;
+    }
+
+    // the trail: a ribbon along the last few positions, fading towards the tail
     if (sim.state === "moving") {
-      this.trailPts.push(new THREE.Vector3(p[0], p[1] - BALL_RADIUS * 0.6, p[2]));
-      if (this.trailPts.length > 36) this.trailPts.shift();
-    } else if (this.trailPts.length) this.trailPts.splice(0, 2);
-    this.trail.geometry.setFromPoints(this.trailPts);
+      this.trailPts.push(new THREE.Vector3(p[0], p[1] - BALL_RADIUS * 0.4, p[2]));
+      if (this.trailPts.length > 40) this.trailPts.shift();
+    } else if (this.trailPts.length) this.trailPts.splice(0, 3);
+    this.updateTrail();
 
     this.confetti.update(dt);
+  }
+
+  private updateTrail(): void {
+    const pts = this.trailPts, n = pts.length, geo = this.trail.geometry;
+    if (n < 2) { geo.setDrawRange(0, 0); return; }
+    const pos: number[] = [], col: number[] = [], idx: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+      const side = new THREE.Vector3(b.z - a.z, 0, -(b.x - a.x)).normalize().multiplyScalar(BALL_RADIUS * 0.8 * (i / n));
+      pos.push(pts[i].x + side.x, pts[i].y, pts[i].z + side.z, pts[i].x - side.x, pts[i].y, pts[i].z - side.z);
+      const k = i / n; col.push(k, k, k, k, k, k);
+      if (i < n - 1) { const j = i * 2; idx.push(j, j + 1, j + 2, j + 1, j + 3, j + 2); }
+    }
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(idx); geo.setDrawRange(0, idx.length);
   }
 
   /** Flash the bumper nearest the ball. */
@@ -224,11 +337,19 @@ export class HoleView {
     this.aimShaft.scale.y = len; this.aimShaft.position.z = -BALL_RADIUS * 1.6;
     this.aimHead.position.z = -BALL_RADIUS * 1.6 - len;
     // green → yellow → red with power
-    const c = new THREE.Color().setHSL(0.33 - power * 0.33, 0.9, 0.55);
+    const c = new THREE.Color().setHSL(0.33 - power * 0.33, 0.95, 0.55).multiplyScalar(1.3);
     (this.aimShaft.material as THREE.MeshBasicMaterial).color.copy(c);
   }
 
-  celebrate(): void { this.confetti.burst(new THREE.Vector3(...this.course.hole)); }
+  /** Confetti from the cup; gold sparks for a hole in one. */
+  celebrate(ace: boolean): void {
+    this.confetti.burst(new THREE.Vector3(...this.course.hole), ace ? GOLD_PALETTE : undefined, ace ? 1.5 : 1);
+  }
+  /** Gold sparks where the ball went into the golden hole, then at the cup when it comes out. */
+  sparkle(at: "gold" | "cup"): void {
+    const p = at === "gold" && this.course.gold ? this.course.gold : this.course.hole;
+    this.confetti.burst(new THREE.Vector3(...p), GOLD_PALETTE, 0.7);
+  }
 
   dispose(): void {
     this.group.traverse((o) => {
@@ -240,26 +361,31 @@ export class HoleView {
   }
 }
 
-/** A burst of confetti from the cup: instanced little squares with their own simple physics. */
+const GOLD_PALETTE = ["#ffd54f", "#ffecb3", "#ffc107", "#fff8e1", "#ffb300"];
+
+/** A burst of confetti: instanced little squares with their own simple physics. */
 class Confetti {
   readonly mesh: THREE.InstancedMesh;
   private parts: { p: THREE.Vector3; v: THREE.Vector3; r: THREE.Euler; w: THREE.Vector3; life: number }[] = [];
   private tmp = new THREE.Object3D();
-  constructor(count = 140) {
-    this.mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.09, 0.14), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }), count);
-    const palette = ["#ef5350", "#ffca28", "#66bb6a", "#42a5f5", "#ab47bc", "#ffffff"].map((c) => new THREE.Color(c));
-    for (let i = 0; i < count; i++) { this.mesh.setColorAt(i, palette[i % palette.length]); this.parts.push({ p: new THREE.Vector3(), v: new THREE.Vector3(), r: new THREE.Euler(), w: new THREE.Vector3(), life: 0 }); }
+  private palette = ["#ef5350", "#ffca28", "#66bb6a", "#42a5f5", "#ab47bc", "#ffffff"];
+  constructor(count = 220) {
+    this.mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.09, 0.14), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false }), count);
+    for (let i = 0; i < count; i++) this.parts.push({ p: new THREE.Vector3(), v: new THREE.Vector3(), r: new THREE.Euler(), w: new THREE.Vector3(), life: 0 });
     this.mesh.count = 0; this.mesh.frustumCulled = false;
   }
-  burst(at: THREE.Vector3): void {
-    for (const c of this.parts) {
-      const a = Math.random() * Math.PI * 2, s = 1.5 + Math.random() * 3;
+  burst(at: THREE.Vector3, palette = this.palette, power = 1): void {
+    const colours = palette.map((c) => new THREE.Color(c).multiplyScalar(1.4));
+    this.parts.forEach((c, i) => {
+      const a = Math.random() * Math.PI * 2, s = (1.5 + Math.random() * 3) * power;
       c.p.copy(at).add(new THREE.Vector3(0, 0.2, 0));
-      c.v.set(Math.cos(a) * s * 0.5, 4 + Math.random() * 4, Math.sin(a) * s * 0.5);
+      c.v.set(Math.cos(a) * s * 0.5, (4 + Math.random() * 4) * power, Math.sin(a) * s * 0.5);
       c.r.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
       c.w.set(Math.random() * 10 - 5, Math.random() * 10 - 5, Math.random() * 10 - 5);
       c.life = 2.2 + Math.random();
-    }
+      this.mesh.setColorAt(i, colours[i % colours.length]);
+    });
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     this.mesh.count = this.parts.length;
   }
   update(dt: number): void {
