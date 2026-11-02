@@ -164,3 +164,33 @@ test("every part of every hole can reach the cup (no dead ends after a jump)", (
     for (const cell of c.grid.cells) if (!cell.block) assert.ok(f.has(cell), `${def.name}: square ${cell.c},${cell.r} can't reach the cup`);
   }
 });
+
+test("power-up: a toot gets a slowing ball going again, along its way", () => {
+  const sim = new Sim(course, first);
+  sim.shoot(0, -1, 0.2);
+  for (let i = 0; i < 60; i++) sim.step();
+  const before = sim.ball.linvel();
+  assert.ok(sim.toot());
+  const after = sim.ball.linvel();
+  assert.ok(Math.hypot(after.x, after.z) > Math.hypot(before.x, before.z) + 2);
+  assert.ok(after.z < 0 && Math.abs(after.x) < 0.05); // still heading the same way
+  // and it goes further than without
+  sim.play(0, 0, 0); for (let i = 0; i < 1200 && sim.state === "moving"; i++) sim.step();
+  const plain = new Sim(course, first); plain.play(0, -1, 0.2);
+  assert.ok(sim.ballPosition()[2] < plain.ballPosition()[2] - 2);
+  assert.equal(new Sim(course, first).toot(), false); // not at rest
+});
+
+test("power-up: a jump lifts the ball over a block", () => {
+  const def = { name: "Wall", par: 3, map: ["...", ".C.", "...", "###", "...", ".T.", "..."] }, c = buildHole(def);
+  const blocked = new Sim(c, def); blocked.play(0, -1, 0.45);
+  assert.ok(blocked.ballPosition()[2] > 8, "without a jump the blocks stop it");
+  const hop = new Sim(c, def); hop.shoot(0, -1, 0.45);
+  let top = 0, jumped = false;
+  for (let i = 0; i < 2400 && hop.state === "moving"; i++) {
+    if (hop.ballPosition()[2] < 9.6 && !jumped) { assert.ok(hop.jump()); jumped = true; }
+    hop.step(); top = Math.max(top, hop.ballPosition()[1]);
+  }
+  assert.ok(top > 0.8, `rose to ${top}`);
+  assert.ok(hop.ballPosition()[2] < 6 || hop.state === "sunk", `ended at ${hop.ballPosition()[2]}`);
+});

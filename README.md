@@ -16,6 +16,7 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 - **Rules:** a ball off the course costs a stroke and goes back where it was. After four over par the ball is picked up, so nobody gets stuck.
 - **Scorecard:** your score against par as you go, with your best scores kept in the browser. At the end, *Copy my score* gives you a shareable line of coloured squares.
 - **Shortcuts:** every hole has a high-risk, high-reward route. Sink the ball in a **golden hole** and it drops straight into the cup for a hole in one; clear a **jump** over the water and you can land right by the cup. Miss, and it's a penalty stroke. Holes in one get a ★ on the scorecard.
+- **Power-ups, once per hole each:** 💨 **Toot** (T) gives a rolling ball a push along its way, with a puff of fart cloud. 🦘 **Jump** (J) pops a rolling ball into the air, over a block, a gap or the windmill's blades, or off the course if you misjudge it. ↺ **Redo** (R) takes your last shot again: the ball goes back, and the stroke and any penalty are taken off.
 - **Practice a hole:** add `?hole=5` to the address to start on hole 5.
 
 ## How it works

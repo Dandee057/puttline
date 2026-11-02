@@ -85,8 +85,27 @@ td.now { background: rgba(46, 125, 50, 0.1); border-radius: 6px; }
 }
 
 /* Nothing but the title until a round starts */
-body.on-title .hud, body.on-title .controls, body.on-title .hint { display: none; }
+body.on-title .hud, body.on-title .controls, body.on-title .hint, body.on-title .powerups { display: none; }
 
 /* A hole in one gets a gold banner */
 .banner.gold b { color: #ffd54f; text-shadow: 0 4px 0 #a86b00, 0 0 30px rgba(255, 200, 60, 0.8), 0 10px 30px rgba(0, 0, 0, 0.25); }
 .star { color: #e0a800; font-size: 11px; margin-left: 1px; vertical-align: super; }
+
+/* Power-ups: once per hole */
+.powerups { position: fixed; left: 16px; bottom: max(16px, env(safe-area-inset-bottom)); display: flex; gap: 8px; }
+.powerups button { position: relative; display: grid; grid-template-columns: auto auto; align-items: center; gap: 6px; height: 46px; padding: 0 14px 0 10px; border: 0; border-radius: 14px; background: var(--paper); box-shadow: var(--shadow); font-weight: 600; font-size: 14px; transition: transform 0.12s, opacity 0.2s, background 0.2s; }
+.powerups .ico { font-size: 20px; line-height: 1; }
+.powerups kbd { position: absolute; top: -6px; right: -4px; font: 600 10px var(--f); background: var(--ink); color: #fff; border-radius: 5px; padding: 1px 5px; }
+.powerups button:not(:disabled):hover { background: #ffffff; transform: translateY(-2px); }
+.powerups button.ready { box-shadow: var(--shadow), 0 0 0 2px #ffd54f, 0 0 18px rgba(255, 213, 79, 0.7); }
+.powerups button:disabled { opacity: 0.45; cursor: default; }
+.powerups button.used { opacity: 0.35; }
+.powerups button.used .lbl { text-decoration: line-through; }
+.powerups button.pop { animation: pop 0.35s ease; }
+@keyframes pop { 40% { transform: scale(1.18); } }
+@media (max-width: 640px) {
+  .powerups { left: 0; right: 0; justify-content: center; bottom: calc(max(16px, env(safe-area-inset-bottom)) + 56px); }
+  .powerups button { height: 42px; padding: 0 12px 0 8px; font-size: 13px; }
+  .powerups kbd { display: none; }
+  .hint, .meter { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 112px); }
+}

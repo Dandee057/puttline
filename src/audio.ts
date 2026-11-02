@@ -79,6 +79,20 @@ export const sfx = {
   /** Into the golden hole: a rising whoosh, then a chime as it drops into the cup. */
   warp() { tone(220, 0.6, 0.22, "sine", 1760); noise(0.5, 0.15, "bandpass", 2400); },
   ace() { [523.25, 659.25, 783.99, 1046.5, 1318.5, 1568].forEach((f, i) => { tone(f, 0.45, 0.16, "triangle", undefined, i * 0.08); tone(f * 2, 0.3, 0.05, "sine", undefined, i * 0.08 + 0.02); }); },
+  /** Power-ups. A toot is a wobbly low buzz with a bit of air in it. */
+  toot() {
+    if (!ctx || !master) return;
+    const t = ctx.currentTime, o = ctx.createOscillator(), lfo = ctx.createOscillator(), depth = ctx.createGain(), g = ctx.createGain(), f = ctx.createBiquadFilter();
+    o.type = "sawtooth"; o.frequency.setValueAtTime(110, t); o.frequency.exponentialRampToValueAtTime(70, t + 0.55);
+    lfo.frequency.value = 26; depth.gain.value = 18; lfo.connect(depth).connect(o.frequency);
+    f.type = "lowpass"; f.frequency.value = 650;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.32, t + 0.03); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+    o.connect(f).connect(g).connect(master);
+    o.start(t); lfo.start(t); o.stop(t + 0.65); lfo.stop(t + 0.65);
+    noise(0.45, 0.08, "lowpass", 500);
+  },
+  boing() { tone(180, 0.18, 0.3, "sine", 720); tone(720, 0.25, 0.12, "triangle", 360, 0.16); },
+  rewind() { tone(1400, 0.35, 0.18, "triangle", 220); noise(0.3, 0.06, "highpass", 3000); },
   splash() { noise(0.6, 0.5, "lowpass", 900); tone(300, 0.3, 0.1, "sine", 90); },
   fanfare() { [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => tone(f, 0.35, 0.16, "triangle", undefined, i * 0.1)); }
 };

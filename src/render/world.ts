@@ -85,6 +85,7 @@ export class HoleView {
   private aimShaft: THREE.Mesh;
   private aimHead: THREE.Mesh;
   private confetti: Confetti;
+  private effects: Effects;
   private course: Course;
   private theme: Theme;
   private flagLift = 0;
@@ -226,6 +227,8 @@ export class HoleView {
 
     this.confetti = new Confetti();
     this.group.add(this.confetti.mesh);
+    this.effects = new Effects();
+    this.group.add(this.effects.group);
   }
 
   private makeFlag(): THREE.Group {
@@ -302,6 +305,7 @@ export class HoleView {
     this.updateTrail();
 
     this.confetti.update(dt);
+    this.effects.update(dt);
   }
 
   private updateTrail(): void {
@@ -340,6 +344,10 @@ export class HoleView {
     const c = new THREE.Color().setHSL(0.33 - power * 0.33, 0.95, 0.55).multiplyScalar(1.3);
     (this.aimShaft.material as THREE.MeshBasicMaterial).color.copy(c);
   }
+
+  /** Power-up effects: a puff of fart cloud behind the ball, and a ring when it jumps. */
+  puff(): void { this.effects.puff(this.ball.position); }
+  ring(): void { this.effects.ring(this.ball.position); }
 
   /** Confetti from the cup; gold sparks for a hole in one. */
   celebrate(ace: boolean): void {
@@ -405,5 +413,46 @@ class Confetti {
     });
     this.mesh.instanceMatrix.needsUpdate = true;
     if (!alive) this.mesh.count = 0;
+  }
+}
+
+/** Short-lived effects for the power-ups: a cloud of puffs that swell and fade, and an expanding ring. */
+class Effects {
+  readonly group = new THREE.Group();
+  private puffs: { mesh: THREE.Mesh; v: THREE.Vector3; life: number; size: number }[] = [];
+  private rings: { mesh: THREE.Mesh; life: number }[] = [];
+  private puffGeo = new THREE.IcosahedronGeometry(0.16, 1);
+  private ringGeo = new THREE.RingGeometry(0.2, 0.28, 40);
+
+  puff(at: THREE.Vector3): void {
+    const colours = ["#9ccc65", "#c5e1a5", "#aed581", "#d4e157"];
+    for (let i = 0; i < 14; i++) {
+      const m = new THREE.Mesh(this.puffGeo, new THREE.MeshStandardMaterial({ color: colours[i % 4], transparent: true, opacity: 0.85, roughness: 1, depthWrite: false }));
+      m.position.copy(at).add(new THREE.Vector3((Math.random() - 0.5) * 0.3, 0.05 + Math.random() * 0.15, (Math.random() - 0.5) * 0.3));
+      this.group.add(m);
+      this.puffs.push({ mesh: m, v: new THREE.Vector3((Math.random() - 0.5) * 0.8, 0.4 + Math.random() * 0.6, (Math.random() - 0.5) * 0.8), life: 1.2 + Math.random() * 0.5, size: 0.6 + Math.random() * 0.8 });
+    }
+  }
+  ring(at: THREE.Vector3): void {
+    const m = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color("#80d8ff").multiplyScalar(1.5), transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, toneMapped: false }));
+    m.rotation.x = -Math.PI / 2; m.position.copy(at).setY(at.y - BALL_RADIUS + 0.02);
+    this.group.add(m); this.rings.push({ mesh: m, life: 0.6 });
+  }
+  update(dt: number): void {
+    this.puffs = this.puffs.filter((p) => {
+      p.life -= dt;
+      p.mesh.position.addScaledVector(p.v, dt); p.v.multiplyScalar(1 - dt * 1.5);
+      p.mesh.scale.setScalar(p.size * (1 + (1.6 - p.life) * 1.4));
+      (p.mesh.material as THREE.MeshStandardMaterial).opacity = Math.max(0, Math.min(0.85, p.life));
+      if (p.life > 0) return true;
+      this.group.remove(p.mesh); (p.mesh.material as THREE.Material).dispose(); return false;
+    });
+    this.rings = this.rings.filter((r) => {
+      r.life -= dt;
+      r.mesh.scale.setScalar(1 + (0.6 - r.life) * 9);
+      (r.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, r.life * 1.5);
+      if (r.life > 0) return true;
+      this.group.remove(r.mesh); (r.mesh.material as THREE.Material).dispose(); return false;
+    });
   }
 }

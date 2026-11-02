@@ -15,7 +15,10 @@ const ROLL_DECEL = 1.9;              // rolling resistance on the green, units/s
 const REST_SPEED = 0.07;
 const REST_TIME = 0.35;              // seconds below REST_SPEED on the ground before the ball counts as stopped
 const BUMPER_KICK = 1.25;
-const MAX_HOP = 1.1;                 // fastest the ball may rise over flat green, units/s (a hop of ~6 cm)
+const MAX_HOP = 1.1;
+const TOOT_BOOST = 3.2;              // power-ups
+const TOOT_MIN = 3.5;
+const JUMP_SPEED = 4.4;              // about 1 unit of height                 // fastest the ball may rise over flat green, units/s (a hop of ~6 cm)
 
 export type Event =
   | { type: "hit"; what: "rail" | "block" | "building" | "bumper" | "blade" | "slider"; speed: number }
@@ -49,6 +52,8 @@ export class Sim {
   lastRest: [number, number, number];
   private still = 0;
   private warpT = 0;
+  private airborne = 0;
+  private lastDir: [number, number] = [0, -1];
   /** Whether the ball went through the golden hole on this shot. */
   warped = false;
   private ground: RAPIER.Collider;
@@ -117,14 +122,44 @@ export class Sim {
     const p = this.ball.translation();
     this.lastRest = [p.x, p.y, p.z];
     const vel = { x: (dx / len) * v, y: 0, z: (dz / len) * v };
+    this.lastDir = [dx / len, dz / len];
     this.ball.setLinvel(vel, true);
     this.rollWith(vel); // a putter starts the ball rolling, not skidding
     this.state = "moving";
     this.still = 0;
   }
 
+  /**
+   * Power-up: a toot. A push along the way the ball is rolling, enough to get a slowing ball going again.
+   * Returns false if the ball isn't rolling.
+   */
+  toot(): boolean {
+    if (this.state !== "moving") return false;
+    const v = this.ball.linvel();
+    let dx = v.x, dz = v.z, s = Math.hypot(dx, dz);
+    if (s < 0.05) { [dx, dz] = this.lastDir; s = 1; }
+    const speed = Math.min(MAX_SPEED, Math.max(TOOT_MIN, s + TOOT_BOOST));
+    const vel = { x: (dx / (s || 1)) * speed, y: v.y, z: (dz / (s || 1)) * speed };
+    this.ball.setLinvel(vel, true);
+    this.rollWith(vel);
+    this.still = 0;
+    return true;
+  }
+
+  /** Power-up: a jump. Pops the rolling ball into the air (over a block, a gap, or off the course). */
+  jump(): boolean {
+    if (this.state !== "moving") return false;
+    const v = this.ball.linvel();
+    this.ball.setLinvel({ x: v.x, y: JUMP_SPEED, z: v.z }, true);
+    this.airborne = 0.4; // don't let the hop limit flatten it on the way up
+    this.still = 0;
+    return true;
+  }
+
   /** Put the ball somewhere, at rest (after going out of bounds, or a new hole). */
   place(p: [number, number, number]): void {
+    this.lastRest = [...p];
+    this.ball.setGravityScale(1, true);
     this.ball.setTranslation({ x: p[0], y: p[1], z: p[2] }, true);
     this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.ball.setAngvel({ x: 0, y: 0, z: 0 }, true);
@@ -262,6 +297,7 @@ export class Sim {
    * thrown up high enough to clear the rails. Ramps are left alone: rolling up one needs the upward speed.
    */
   private limitHop(): void {
+    if (this.airborne > 0) { this.airborne -= DT; return; }
     const p = this.ball.translation(), cell = this.course.grid.at(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
     if (!cell || cell.ramp) return;
     // only right at grass level, where the contacts are: a ball in the air (off a jump) flies freely

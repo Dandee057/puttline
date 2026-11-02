@@ -35,6 +35,11 @@ const game = {
   index: 0,
   scores: [] as (number | undefined)[],
   aces: [] as boolean[],
+  /** Power-ups left on this hole. */
+  powers: { toot: true, jump: true, redo: true },
+  /** Where the last shot was played from, and the strokes before it: what Redo goes back to. */
+  lastShot: null as { from: [number, number, number]; strokes: number } | null,
+  outTimer: 0,
   strokes: 0,
   def: HOLES[0] as HoleDef,
   course: null as Course | null,
@@ -53,6 +58,7 @@ function loadHole(i: number): void {
   game.view && (stage.scene.remove(game.view.group), game.view.dispose());
   game.sim?.free();
   game.index = i; game.def = HOLES[i]; game.strokes = 0;
+  game.powers = { toot: true, jump: true, redo: true }; game.lastShot = null; clearTimeout(game.outTimer);
   game.course = buildHole(game.def);
   game.sim = new physics!.Sim(game.course, game.def);
   const theme = themeFor(game.def.theme);
@@ -124,6 +130,7 @@ function frame(now: number): void {
     if (game.phase === "aim" && aiming) view.showAim(aiming.dir, aiming.power); else view.showAim(null, 0);
     cameraFor(dt);
     if (game.phase === "holed" && (game.holedT += dt) > 2.8) nextHole();
+    updatePowerButtons();
   } else {
     // Title: a slow turn over the first hole
     stage.goal.yaw += dt * 0.08;
@@ -146,7 +153,7 @@ function handle(events: Event[]): void {
       sfx.splash();
       game.strokes++;
       toast("Out of bounds: one stroke penalty");
-      setTimeout(() => { game.sim?.place(game.sim.lastRest); afterRest(); }, 900);
+      game.outTimer = window.setTimeout(() => { game.sim?.place(game.sim.lastRest); afterRest(); }, 900);
       hud();
     } else if (e.type === "rest" && game.phase === "rolling") afterRest();
   }
@@ -285,6 +292,7 @@ const clampZoom = (z: number) => Math.max(4, Math.min(24, z));
 
 function shoot(dir: THREE.Vector2, power: number): void {
   if (!game.sim) return;
+  game.lastShot = { from: game.sim.ballPosition(), strokes: game.strokes };
   game.strokes++;
   game.sim.shoot(dir.x, dir.y, power);
   game.phase = "rolling";
@@ -293,9 +301,61 @@ function shoot(dir: THREE.Vector2, power: number): void {
   hud();
 }
 
+/* ---------- Power-ups: once per hole each ---------- */
+
+type Power = "toot" | "jump" | "redo";
+
+/** Whether a power-up can be used right now. */
+function canUse(p: Power): boolean {
+  const { sim } = game;
+  if (!sim || !game.powers[p]) return false;
+  if (p === "redo") return !!game.lastShot && (game.phase === "rolling" || game.phase === "aim") && sim.state !== "warp" && sim.state !== "sunk";
+  return game.phase === "rolling" && sim.state === "moving";
+}
+
+function usePower(p: Power): void {
+  if (!canUse(p) || !game.sim || !game.view) return;
+  const sim = game.sim, view = game.view;
+  if (p === "toot" && sim.toot()) { sfx.toot(); view.puff(); }
+  else if (p === "jump" && sim.jump()) { sfx.boing(); view.ring(); }
+  else if (p === "redo") {
+    const shot = game.lastShot!;
+    clearTimeout(game.outTimer);
+    sim.place(shot.from);
+    game.strokes = shot.strokes;
+    game.lastShot = null;
+    game.phase = "aim";
+    sfx.rewind();
+    toast("Shot undone: take it again");
+    faceTheWay();
+    hud();
+  } else return;
+  game.powers[p] = false;
+  const b = $(`pu-${p}`); b.classList.remove("pop"); void b.offsetWidth; b.classList.add("pop");
+}
+
+/** Keep the buttons in step with the game: lit when they'd do something, crossed out once used. */
+const powerKeys: Power[] = ["toot", "jump", "redo"];
+let powerState = "";
+function updatePowerButtons(): void {
+  const st = powerKeys.map((p) => `${game.powers[p] ? 1 : 0}${canUse(p) ? 1 : 0}`).join();
+  if (st === powerState) return;
+  powerState = st;
+  for (const p of powerKeys) {
+    const b = $<HTMLButtonElement>(`pu-${p}`), ok = canUse(p);
+    b.disabled = !ok;
+    b.classList.toggle("used", !game.powers[p]);
+    b.classList.toggle("ready", ok && p !== "redo");
+  }
+}
+for (const p of powerKeys) $(`pu-${p}`).addEventListener("click", () => { unlockAudio(); usePower(p); });
+
 addEventListener("keydown", (e) => {
   if ((e.target as HTMLElement).closest("input, textarea")) return;
   const k = e.key.toLowerCase();
+  if (k === "t") { usePower("toot"); return; }
+  if (k === "j") { usePower("jump"); return; }
+  if (k === "r" && !e.ctrlKey && !e.metaKey) { usePower("redo"); return; }
   if (k === "a" || k === "arrowleft") stage.goal.yaw += 0.25;
   else if (k === "d" || k === "arrowright") stage.goal.yaw -= 0.25;
   else if (k === "w" || k === "arrowup") zoom = clampZoom(zoom * 0.85);
@@ -435,7 +495,8 @@ stage.resize();
 if (new URLSearchParams(location.search).has("debug")) {
   (window as unknown as { puttline: object }).puttline = {
     shoot: (dx: number, dz: number, power: number) => { if (game.phase === "intro") game.introT = 2.6; if (game.phase === "aim" || game.phase === "intro") { game.phase = "aim"; shoot(new THREE.Vector2(dx, dz), power); } },
-    state: () => ({ phase: game.phase, hole: game.index + 1, strokes: game.strokes, scores: game.scores, aces: game.aces })
+    state: () => ({ phase: game.phase, hole: game.index + 1, strokes: game.strokes, scores: game.scores, aces: game.aces, powers: game.powers, ball: game.sim?.ballPosition() }),
+    power: (p: Power) => usePower(p)
   };
 }
 // ?hole=5 jumps straight to a hole (handy for practice, and for testing)
