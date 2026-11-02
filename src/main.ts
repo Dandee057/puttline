@@ -2,10 +2,10 @@ import * as THREE from "three";
 import "./style.css";
 import { buildHole, type Course } from "./course/build.ts";
 import { HOLES } from "./course/holes.ts";
-import { CELL, cellCentre, type HoleDef } from "./course/parse.ts";
+import type { Cell, HoleDef } from "./course/parse.ts";
 import type { Event, Sim } from "./game/physics.ts";
 import { maxStrokes, scoreName, toPar, totals } from "./game/rules.ts";
-import { distanceField } from "./game/route.ts";
+import { distanceField, wayToGo as routeAhead } from "./game/route.ts";
 import { isMuted, setMuted, sfx, unlockAudio } from "./audio.ts";
 import { Stage, yawFacing } from "./render/stage.ts";
 import { HoleView } from "./render/world.ts";
@@ -45,7 +45,7 @@ const game = {
   course: null as Course | null,
   sim: null as Sim | null,
   view: null as HoleView | null,
-  field: null as Map<unknown, number> | null,
+  field: null as Map<Cell, number> | null,
   introT: 0,
   holedT: 0,
   overview: false,
@@ -207,23 +207,10 @@ function cameraFor(dt: number): void {
   stage.updateCamera(dt);
 }
 
-/** Which way to look from the ball: along the walking route to the cup a few squares ahead (round corners). */
+/** Which way to look from the ball: along the walking route to the cup. */
 function wayToGo(): [number, number] {
   const { course, sim, field } = game;
-  if (!course || !sim || !field) return [0, -1];
-  const p = sim.ballPosition(), g = course.grid;
-  let cell = g.at(Math.floor(p[0] / CELL), Math.floor(p[2] / CELL));
-  for (let k = 0; k < 3 && cell && !cell.cup; k++) {
-    const here = cell;
-    const next = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dc, dr]) => g.at(here.c + dc, here.r + dr))
-      .filter((c) => c && field.has(c) && field.get(c)! < field.get(here)!)
-      .sort((a, b) => field.get(a!)! - field.get(b!)!)[0];
-    if (!next) break;
-    cell = next;
-  }
-  const [tx, tz] = cell ? cellCentre(cell) : [course.hole[0], course.hole[2]];
-  const dx = tx - p[0], dz = tz - p[2];
-  return Math.hypot(dx, dz) < 0.5 ? [course.hole[0] - p[0] || 0, course.hole[2] - p[2] || -1] : [dx, dz];
+  return course && sim && field ? routeAhead(course, field, sim.ballPosition()) : [0, -1];
 }
 
 function faceTheWay(): void {

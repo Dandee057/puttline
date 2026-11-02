@@ -37,3 +37,20 @@ export function remaining(course: Course, field: Map<Cell, number>, p: [number, 
   return field.get(cell)! + Math.hypot(p[0] - cx, p[2] - cz);
 }
 
+
+/** Which way to look from a point: along the walking route to the cup a few squares ahead (so round corners). */
+export function wayToGo(course: Course, field: Map<Cell, number>, p: [number, number, number]): [number, number] {
+  const g = course.grid;
+  let cell = g.at(Math.floor(p[0] / CELL), Math.floor(p[2] / CELL));
+  for (let k = 0; k < 3 && cell && !cell.cup; k++) {
+    const here = cell;
+    const next = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dc, dr]) => g.at(here.c + dc, here.r + dr))
+      .filter((c) => c && field.has(c) && field.get(c)! < field.get(here)!)
+      .sort((a, b) => field.get(a!)! - field.get(b!)!)[0];
+    if (!next) break;
+    cell = next;
+  }
+  const [tx, tz] = cell ? cellCentre(cell) : [course.hole[0], course.hole[2]];
+  const dx = tx - p[0], dz = tz - p[2];
+  return Math.hypot(dx, dz) < 0.5 ? [course.hole[0] - p[0] || 0, course.hole[2] - p[2] || -1] : [dx, dz];
+}

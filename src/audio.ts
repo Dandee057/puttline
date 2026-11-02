@@ -18,6 +18,9 @@ export function unlockAudio(): void {
   } catch { ctx = null; }
 }
 
+/** Go quiet straight away (the cartridge build, when its console is switched to another game). */
+export function suspendAudio(): void { if (ctx && ctx.state === "running") void ctx.suspend(); }
+
 export const isMuted = () => muted;
 export function setMuted(m: boolean): void {
   muted = m;

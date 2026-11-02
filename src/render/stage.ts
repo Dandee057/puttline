@@ -31,11 +31,18 @@ export class Stage {
   readonly target = new THREE.Vector3();
   goal = { yaw: 0, pitch: 0.62, distance: 10, target: new THREE.Vector3() };
 
-  constructor(canvas: HTMLCanvasElement) {
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  /** The size to draw at; `null` means "the canvas's size on the page". */
+  private fixedSize: [number, number] | null = null;
+
+  /**
+   * `offscreen`: the cartridge build draws into a canvas that isn't on the page and copies each frame onto a
+   * console screen, so it keeps the drawing buffer and draws at exactly the size it's given.
+   */
+  constructor(canvas: HTMLCanvasElement, opts: { offscreen?: boolean } = {}) {
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", preserveDrawingBuffer: !!opts.offscreen });
+    this.renderer.setPixelRatio(opts.offscreen ? 1 : Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
 
     this.hemi = new THREE.HemisphereLight("#ffffff", "#7a9a6a", 1.6);
@@ -109,7 +116,8 @@ export class Stage {
   }
 
   resize(): void {
-    const c = this.renderer.domElement, w = c.clientWidth, h = c.clientHeight;
+    const c = this.renderer.domElement;
+    const [w, h] = this.fixedSize ?? [c.clientWidth, c.clientHeight];
     this.renderer.setSize(w, h, false);
     this.composer.setSize(w, h);
     this.bloom.resolution.set(w / 2, h / 2);
@@ -117,6 +125,13 @@ export class Stage {
     // narrower screens get a wider view, so the hole still fits on a phone
     this.camera.fov = w / h < 0.8 ? 62 : 45;
     this.camera.updateProjectionMatrix();
+  }
+
+  /** Draw at a fixed size (the cartridge build, which has no canvas on the page). */
+  setSize(w: number, h: number): void {
+    if (this.fixedSize && this.fixedSize[0] === w && this.fixedSize[1] === h) return;
+    this.fixedSize = [w, h];
+    this.resize();
   }
 
   /** Ease the camera towards its goal; `snap` jumps straight there. */

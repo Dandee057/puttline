@@ -60,6 +60,8 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 
 **Sound without files.** Putts, rail knocks, bumpers, the cup's rattle and the splash are synthesised with the Web Audio API ([`src/audio.ts`](src/audio.ts)).
 
+**Also a console cartridge.** The same game plays on the handheld consoles on [dandeegames.com](https://dandeegames.com/) and on an arcade cabinet in [Three Lab](https://github.com/dandee057/dandee-three-lab), with a d-pad and two buttons instead of the mouse: ◀ ▶ aim, ▲ ▼ power, A putt, B overview, and while the ball rolls A jump, B toot, START redo. [`src/cartridge.ts`](src/cartridge.ts) speaks those sites' small cartridge API (`update`, `drawScreen`, `hold`, `press`…), renders the scene off-screen at the console screen's exact size and draws the HUD on top. `npm run build:cartridge` builds it as one script, with three.js and Rapier inside, plus [`cartridge/puttline.js`](cartridge/puttline.js), a 4 kB loader the sites include, which only fetches the game when the cartridge goes in.
+
 ## Running it
 
 ```bash
@@ -68,6 +70,7 @@ npm run dev           # http://localhost:5173
 npm test              # unit tests, physics included (Node's built-in test runner)
 npm run check-holes   # after changing a hole: find a way round it, save it for the tests
 npm run build         # type-checks, then builds to dist/
+npm run build:cartridge  # the console cartridge, to dist-cartridge/ (copy it to games/puttline/)
 ```
 
 **Adding a hole:** add a map to [`src/course/holes.ts`](src/course/holes.ts), run `npm run check-holes`, and open it with `?hole=10`.
@@ -79,17 +82,19 @@ npm run build         # type-checks, then builds to dist/
 ```
 src/
   main.ts              the game: holes, strokes, aiming, camera, screens
+  cartridge.ts         the same game as a console cartridge: d-pad controls, HUD drawn on a 2D canvas
   course/parse.ts      reading a hole's text map
   course/build.ts      map → green, cup, steps, rails, blocks, windmill
   course/holes.ts      the nine holes
   game/physics.ts      the ball and everything it hits (Rapier)
   game/rules.ts        score names, stroke limit, totals
-  game/route.ts        walking distance to the cup (camera direction, hole checker)
+  game/route.ts        walking distance to the cup, and which way to face (camera, hole checker)
   game/solver.ts       the search that proves each hole can be finished
   render/stage.ts      renderer, bloom, sky, water or lava, particles, camera rig
   render/world.ts      a hole drawn in Three.js: ball, waving flag, golden hole, neon trim, windmill, trail, confetti
   render/themes.ts     the nine arenas: sky, light, colours, scenery, particles
   audio.ts             synthesised sound effects
+cartridge/puttline.js  the cartridge loader, and its cover
 scripts/check-holes.ts finds and saves a way round every hole
 tests/                 course building, physics, rules, and a replay of every hole
 ```
