@@ -104,6 +104,8 @@ export const sfx = {
   /** Frost: a sparkling crackle as everything freezes, and a crunch when it thaws. */
   freeze() { [1568, 2093, 2637, 3136].forEach((f, i) => tone(f, 0.4, 0.08, "sine", f * 0.8, i * 0.05)); noise(0.6, 0.12, "highpass", 6000); },
   thaw() { noise(0.35, 0.25, "bandpass", 1200); tone(400, 0.2, 0.08, "triangle", 160); },
+  /** A tree cut down: a crack, then the creak and thump as it falls. */
+  timber() { noise(0.08, 0.4, "bandpass", 2200); tone(220, 0.5, 0.12, "sawtooth", 90, 0.08); noise(0.3, 0.35, "lowpass", 300, 0.55); },
   /** Mecha: the magnet powering up. */
   magnet() { tone(120, 0.6, 0.25, "sawtooth", 480); tone(240, 0.6, 0.08, "square", 960, 0.05); }
 };

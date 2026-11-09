@@ -1,5 +1,5 @@
 import RAPIER from "@dimforge/rapier3d-compat";
-import { BUMPER_RADIUS, CUP_DEPTH, CUP_RADIUS, GOLD_RADIUS, type Course, type MeshPart } from "../course/build.ts";
+import { BUMPER_RADIUS, CUP_DEPTH, CUP_RADIUS, GOLD_RADIUS, TREE_RADIUS, type Course, type MeshPart } from "../course/build.ts";
 import { CELL, cellCentre, cornerHeights, floorHeight, type HoleDef, type Slider } from "../course/parse.ts";
 
 /**
@@ -20,22 +20,24 @@ const TOOT_BOOST = 3.2;              // power-ups
 const TOOT_MIN = 3.5;
 const JUMP_SPEED = 4.4;              // about 1 unit of height
 // The three balls' special powers (see src/game/balls.ts)
-export const SLASH_TIME = 1.5;       // samurai: seconds the ball cuts through blocks, bumpers, sliders and blades
-const SLASH_SPEED = 6;               // and the dash it gets as it draws
-export const FREEZE_TIME = 5;        // frost: seconds the windmill and moving blocks stop and the water is ice
-const ICE_DRAG = 0.35;               // on ice the ball keeps rolling: this much of the grass's resistance
-export const MAGNET_TIME = 3;        // mecha: seconds the cup pulls the ball in
-const MAGNET_RANGE = 5;              // from this far away
-const MAGNET_PULL = 9;               // units/s² at the edge of range, more up close
+export const SLASH_TIME = 1.5;       // samurai: seconds the ball cuts through blocks, bumpers, sliders, blades and trees
+const SLASH_SPEED = 9.5;             // the dash it gets as it draws: at least this fast,
+const SLASH_BOOST = 5;               // and always this much faster than it was going
+export const FREEZE_TIME = 6;        // frost: seconds the windmill, moving blocks and rivers stop and the water is ice
+const ICE_DRAG = 0.3;                // on ice the ball keeps rolling: this much of the grass's resistance
+export const MAGNET_TIME = 1.5;      // mecha: seconds the cup pulls the ball in (a short burst: aim still matters)
+export const MAGNET_RANGE = 3.2;     // from this far away
+const MAGNET_PULL = 5;               // units/s² at the edge of range, more up close
+export const RIVER_PUSH = 1.3;       // a river's current, units/s² (less than the grass's resistance, so it always stops)
 /** Membership/filter bits (Rapier InteractionGroups: memberships << 16 | filter). Obstacles are group 2. */
 const OBSTACLE_GROUPS = (0x0002 << 16) | 0xffff;
 const BALL_NORMAL = 0xffffffff, BALL_CUTTING = (0xffff << 16) | 0xfffd;
 
-export type Obstacle = "block" | "building" | "bumper" | "blade" | "slider";
+export type Obstacle = "block" | "building" | "bumper" | "blade" | "slider" | "tree";
 export type Event =
   | { type: "hit"; what: "rail" | Obstacle; speed: number }
   /** The samurai ball cut through something. */
-  | { type: "cut"; what: Obstacle; at: [number, number, number] }
+  | { type: "cut"; what: Obstacle; at: [number, number, number]; tree?: number }
   /** The ice from a freeze has melted. */
   | { type: "thaw" }
   | { type: "sunk" } | { type: "out" } | { type: "rest" }
@@ -84,6 +86,9 @@ export class Sim {
   freezeT = 0;
   magnetT = 0;
   private cut = new Set<number>();
+  /** Trees by collider handle (their index in course.trees), and the ones cut down this hole. */
+  private trees = new Map<number, number>();
+  readonly felled = new Set<number>();
   private ice: RAPIER.Collider | null = null;
   private probe = new RAPIER.Ball(BALL_RADIUS * 1.05);
 
@@ -108,6 +113,11 @@ export class Sim {
         .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS).setCollisionGroups(OBSTACLE_GROUPS), fixed);
       this.kinds.set(c.handle, "bumper");
     }
+    course.trees.forEach((t, i) => {
+      const c = this.world.createCollider(bouncy(RAPIER.ColliderDesc.cylinder(0.7, TREE_RADIUS).setTranslation(t.x, t.y + 0.7, t.z), 0.55, 0.2)
+        .setCollisionGroups(OBSTACLE_GROUPS), fixed);
+      this.kinds.set(c.handle, "tree"); this.trees.set(c.handle, i);
+    });
     // Windmill blades: four paddles on a hub, turning in the plane facing the tee
     for (const w of course.windmills) {
       const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(w.x, w.hubY, w.hubZ));
@@ -192,7 +202,7 @@ export class Sim {
     const v = this.ball.linvel();
     let dx = v.x, dz = v.z, s = Math.hypot(dx, dz);
     if (s < 0.05) { [dx, dz] = this.lastDir; s = 1; }
-    const speed = Math.min(MAX_SPEED, Math.max(SLASH_SPEED, Math.hypot(v.x, v.z)));
+    const speed = Math.min(MAX_SPEED, Math.max(SLASH_SPEED, Math.hypot(v.x, v.z) + SLASH_BOOST));
     const vel = { x: (dx / s) * speed, y: v.y, z: (dz / s) * speed };
     this.ball.setLinvel(vel, true); this.rollWith(vel);
     this.slashT = SLASH_TIME; this.cut.clear();
@@ -226,6 +236,12 @@ export class Sim {
     return true;
   }
 
+  /** The river square under the ball, if it's on one. */
+  riverUnder(p = this.ball.translation()) {
+    const cell = this.course.grid.at(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
+    return cell?.river ? cell : null;
+  }
+
   /** Whether there's green (not water) under the ball. */
   overGreen(p = this.ball.translation()): boolean {
     return !!this.course.grid.at(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
@@ -250,7 +266,9 @@ export class Sim {
     else this.kinTime += DT; // the windmill and moving blocks stand still while frozen
     this.moveKinematics(this.kinTime);
     const grounded = this.onGround();
-    if (this.state === "moving" && grounded) this.rollingResistance(this.onIce() ? ICE_DRAG : 1);
+    const river = this.state === "moving" && grounded ? this.riverUnder() : null;
+    if (this.state === "moving" && grounded) this.rollingResistance(this.onIce() || (river && this.freezeT > 0) ? ICE_DRAG : 1);
+    if (river && this.freezeT <= 0) this.current();
     if (this.state === "moving" && this.magnetT > 0) this.pull();
     if (this.slashT > 0) this.cutThrough(out);
     const before = this.ball.linvel(), impact = Math.hypot(before.x, before.z);
@@ -382,7 +400,10 @@ export class Sim {
     if (this.state === "rest" && !this.overGreen()) { this.state = "moving"; this.still = 0; }
   }
 
-  /** The cup's magnet: pull towards the cup, damp the sideways drift, and slow it near the rim so it drops. */
+  /**
+   * The cup's magnet: pull towards the cup and gently damp the sideways drift. It doesn't brake the ball, so a putt
+   * that's far too hard still lips out, and one that's far too soft still stops short: it fixes near misses.
+   */
   private pull(): void {
     this.magnetT = Math.max(0, this.magnetT - DT);
     const p = this.ball.translation(), [hx, , hz] = this.course.hole;
@@ -393,24 +414,37 @@ export class Sim {
     const v = this.ball.linvel();
     const along = v.x * dx + v.z * dz, sx = v.x - along * dx, sz = v.z - along * dz;
     const a = MAGNET_PULL * (1.6 - d / MAGNET_RANGE) * DT;
-    let nx = (along + a) * dx + sx * 0.96, nz = (along + a) * dz + sz * 0.96;
-    const cap = d < 1.4 ? 1.6 + d : MAX_SPEED, s = Math.hypot(nx, nz);
-    if (s > cap) { nx *= cap / s; nz *= cap / s; }
+    const nx = (along + a) * dx + sx * 0.985, nz = (along + a) * dz + sz * 0.985;
     const vel = { x: nx, y: v.y, z: nz };
     this.ball.setLinvel(vel, true); this.rollWith(vel);
   }
 
-  /** While slashing, note each obstacle the ball passes through (for the effect) and end it once clear. */
+  /** A river's current: a gentle push the way it flows. */
+  private current(): void {
+    const [fx, fz] = this.course.river.flow, v = this.ball.linvel();
+    this.ball.setLinvel({ x: v.x + fx * RIVER_PUSH * DT, y: v.y, z: v.z + fz * RIVER_PUSH * DT }, true);
+  }
+
+  /** While slashing, note each obstacle the ball passes through (for the effect) and end it once clear. Trees fall. */
   private cutThrough(out: Event[]): void {
     const p = this.ball.translation();
     let inside = false;
+    const fell: RAPIER.Collider[] = [];
     this.world.intersectionsWithShape(p, { x: 0, y: 0, z: 0, w: 1 }, this.probe, (c) => {
       const what = this.kinds.get(c.handle);
       if (!what || what === "green" || what === "rail") return true;
+      if (what === "tree") {
+        // a tree is cut down for good (this hole): it's gone, so it doesn't keep the blade out
+        const i = this.trees.get(c.handle)!;
+        this.felled.add(i); fell.push(c);
+        out.push({ type: "cut", what, at: [p.x, p.y, p.z], tree: i });
+        return true;
+      }
       inside = true;
       if (!this.cut.has(c.handle)) { this.cut.add(c.handle); out.push({ type: "cut", what, at: [p.x, p.y, p.z] }); }
       return true;
     });
+    for (const c of fell) { this.kinds.delete(c.handle); this.trees.delete(c.handle); this.world.removeCollider(c, false); }
     // never let the blade go back in while the ball is still inside something
     if ((this.slashT -= DT) <= 0 && !inside) this.endSlash();
     else if (this.slashT <= 0) this.slashT = DT;

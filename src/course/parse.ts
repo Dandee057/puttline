@@ -10,6 +10,10 @@
  *   #  solid block on the green
  *   _  bridge: green with no rails, so the ball can fall off
  *   W  windmill: its building blocks this square except for a tunnel; blades turn in front (towards +z)
+ *   Y  tree: a trunk in the middle of the square, with room to roll round it either side. The samurai's slash
+ *      cuts it down.
+ *   ~  river: green with a gentle current running the hole's `flow` way, nudging a rolling ball off line.
+ *      Frozen, it stops and turns to fast ice.
  *   G  golden hole: a small cup with no rails round it. Drop the ball in and it comes out in the real cup
  *      (a hole in one); miss and it's likely in the water. g is the same on the raised level.
  *
@@ -35,6 +39,8 @@ export interface Cell {
   block?: boolean;
   windmill?: boolean;
   gold?: boolean;
+  tree?: boolean;
+  river?: boolean;
   /** No rails along its open edges. */
   bridge?: boolean;
 }
@@ -48,7 +54,7 @@ export interface Slider {
   phase?: number;
 }
 
-export type ThemeName = "meadow" | "autumn" | "desert" | "arcade" | "tulips" | "city" | "ice" | "volcano" | "space";
+export type ThemeName = "forest" | "meadow" | "autumn" | "desert" | "arcade" | "tulips" | "city" | "ice" | "volcano" | "space";
 
 export interface HoleDef {
   name: string;
@@ -59,6 +65,8 @@ export interface HoleDef {
   shortcut?: string;
   map: string[];
   sliders?: Slider[];
+  /** Which way the river (~) flows: towards the top, bottom, left or right of the page. Default right. */
+  flow?: Dir;
   /** Windmill blade speed, turns per second. */
   windmillSpeed?: number;
 }
@@ -90,7 +98,9 @@ export function parseHole(def: HoleDef): Grid {
     if (ch === "#") cell.block = true;
     if (ch === "_" || ch === "=") cell.bridge = true;
     if (ch === "W") cell.windmill = true;
-    if (!".:TtCc^v<>o#_=WGg".includes(ch)) throw new Error(`${def.name}: unknown square "${ch}" at column ${c}, row ${r}`);
+    if (ch === "Y") cell.tree = true;
+    if (ch === "~") cell.river = true;
+    if (!".:TtCc^v<>o#_=WGgY~".includes(ch)) throw new Error(`${def.name}: unknown square "${ch}" at column ${c}, row ${r}`);
     cells.push(cell);
   }));
   const index = new Map(cells.map((x) => [`${x.c},${x.r}`, x]));

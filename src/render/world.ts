@@ -2,8 +2,8 @@ import * as THREE from "three";
 import { ConvexGeometry } from "three/examples/jsm/geometries/ConvexGeometry.js";
 import { BUMPER_RADIUS, CUP_RADIUS, GOLD_RADIUS, type Course, type MeshPart } from "../course/build.ts";
 import { CELL, type HoleDef } from "../course/parse.ts";
-import { BALL_RADIUS, type Sim } from "../game/physics.ts";
-import type { Theme } from "./themes.ts";
+import { BALL_RADIUS, FREEZE_TIME, MAGNET_RANGE, MAGNET_TIME, SLASH_TIME, type Sim } from "../game/physics.ts";
+import { courseTree, type Theme } from "./themes.ts";
 import { BALLS, type BallDef } from "../game/balls.ts";
 import { makeBall, type BallLook } from "./balls.ts";
 
@@ -68,6 +68,31 @@ function iceTexture(): THREE.Texture {
   return iceTex;
 }
 
+/** Running water for a river: streaks of foam along u, which is scrolled the way it flows. */
+const riverTextures = new Map<string, THREE.Texture>();
+function riverTexture(water: string, foam: string): THREE.Texture {
+  const key = water + foam;
+  if (riverTextures.has(key)) return riverTextures.get(key)!;
+  const c = document.createElement("canvas"); c.width = c.height = 128;
+  const g = c.getContext("2d")!;
+  g.fillStyle = water; g.fillRect(0, 0, 128, 128);
+  const grd = g.createLinearGradient(0, 0, 0, 128);
+  grd.addColorStop(0, "rgba(0,0,0,.18)"); grd.addColorStop(0.5, "rgba(255,255,255,.08)"); grd.addColorStop(1, "rgba(0,0,0,.18)");
+  g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
+  let seed = 3; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  g.strokeStyle = foam; g.lineCap = "round";
+  for (let i = 0; i < 22; i++) {
+    const y = 8 + rnd() * 112, x = rnd() * 128, len = 14 + rnd() * 30;
+    g.globalAlpha = 0.25 + rnd() * 0.5; g.lineWidth = 1 + rnd() * 2.2;
+    for (const dx of [0, -128, 128]) { g.beginPath(); g.moveTo(x + dx, y); g.quadraticCurveTo(x + dx + len / 2, y - 2 + rnd() * 4, x + dx + len, y); g.stroke(); }
+  }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace;
+  riverTextures.set(key, t);
+  return t;
+}
+
 function geometry(m: MeshPart, uv = false): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(m.positions, 3));
@@ -123,6 +148,11 @@ export class HoleView {
   private iceLevel = 0;
   private magnetRings: THREE.Mesh[] = [];
   private magnetBeam: THREE.Mesh;
+  private trees: { stump: THREE.Group; top: THREE.Group; at: THREE.Vector3; fall: number; axis: THREE.Vector3; yaw: number }[] = [];
+  private river: { water: THREE.Mesh; ice: THREE.Mesh } | null = null;
+  private timer: THREE.Mesh;
+  private timerFrac = -1;
+  private magnetZone: THREE.Mesh;
   private vel = new THREE.Vector3();
   private prevPos = new THREE.Vector3();
 
@@ -238,6 +268,42 @@ export class HoleView {
       this.cuttable.push({ obj: mesh, mat: mesh.material as THREE.MeshStandardMaterial, flash: 0 });
     }
 
+    // Trees (Y): the arena's kind of tree, which the samurai can cut down
+    for (const t of course.trees) {
+      const { stump, top } = courseTree(theme.tree, night);
+      stump.position.set(t.x, t.y, t.z); top.position.set(t.x, t.y, t.z);
+      const turn = ((t.x * 7.3 + t.z * 3.1) % 6.28); top.rotation.y = turn;
+      this.group.add(stump, top);
+      this.trees.push({ stump, top, at: new THREE.Vector3(t.x, t.y, t.z), fall: -1, axis: new THREE.Vector3(1, 0, 0), yaw: turn });
+    }
+
+    // Rivers (~): running water over those squares, scrolling the way it flows; ice over it while frozen
+    if (course.river.cells.length) {
+      const pos: number[] = [], uv: number[] = [], idx: number[] = [];
+      const [fx, fz] = course.river.flow;
+      for (const cell of course.river.cells) {
+        const x0 = cell.c * CELL, z0 = cell.r * CELL, y = cell.level * 0.6 + 0.008, n = pos.length / 3;
+        for (const [x, z] of [[x0, z0], [x0 + CELL, z0], [x0 + CELL, z0 + CELL], [x0, z0 + CELL]]) {
+          pos.push(x, y, z);
+          // u along the flow, v across it, so the streaks always run downstream
+          uv.push((x * fx + z * fz) / CELL / 2, (-x * fz + z * fx) / CELL / 2);
+        }
+        idx.push(n, n + 3, n + 2, n, n + 2, n + 1);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+      geo.setIndex(idx); geo.computeVertexNormals();
+      const map = riverTexture(theme.river.water, theme.river.foam).clone(); map.needsUpdate = true;
+      const water = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map, roughness: 0.2, metalness: 0.05, emissive: theme.river.water, emissiveIntensity: theme.river.glow, transparent: true, opacity: 0.93 }));
+      const iceMap = iceTexture().clone(); iceMap.repeat.set(1, 1); iceMap.needsUpdate = true;
+      const ice = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: iceMap, color: "#e6f8ff", roughness: 0.1, metalness: 0.15, emissive: "#7fdcff", emissiveIntensity: 0.3, transparent: true, opacity: 0, depthWrite: false }));
+      ice.position.y = 0.004; ice.visible = false;
+      water.receiveShadow = true; ice.receiveShadow = true;
+      this.group.add(water, ice);
+      this.river = { water, ice };
+    }
+
     // The ball you chose: its painted sphere rolls, its topper (hat, crown or antenna) stays upright
     this.look = makeBall(ball, night);
     this.ball = this.look.mesh;
@@ -257,6 +323,14 @@ export class HoleView {
     }
     this.magnetBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1, 6, 1, true).translate(0, 0.5, 0).rotateX(Math.PI / 2), neon(ball.colours.accent, 2.2, 0.75));
     this.magnetBeam.visible = false; this.group.add(this.magnetBeam);
+    // The magnet's reach: a faint circle round the cup, so you know where it works
+    this.magnetZone = new THREE.Mesh(new THREE.RingGeometry(MAGNET_RANGE - 0.05, MAGNET_RANGE, 64), neon(ball.colours.accent, 1.6, 0));
+    this.magnetZone.rotation.x = -Math.PI / 2; this.magnetZone.position.set(course.hole[0], course.hole[1] + 0.015, course.hole[2]);
+    this.magnetZone.visible = false; this.group.add(this.magnetZone);
+    // A ring round the ball that runs down while a power is on: how long it has left
+    this.timer = new THREE.Mesh(new THREE.BufferGeometry(), neon(ball.colours.accent, 2, 0.9));
+    this.timer.rotation.x = -Math.PI / 2; this.timer.visible = false; this.timer.renderOrder = 6;
+    this.group.add(this.timer);
 
     // The trail: a glowing ribbon behind the rolling ball, in the ball's colour
     this.trail = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: new THREE.Color(ball.colours.trail).multiplyScalar(1.5), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, vertexColors: true }));
@@ -402,19 +476,60 @@ export class HoleView {
 
   /** What the special powers look like while they're running. */
   private powerEffects(sim: Sim, dt: number, t: number): void {
+    // trees the samurai cut: the top topples away from the blade, lands, and shrinks away in a burst of leaves
+    for (const [i, tree] of this.trees.entries()) {
+      if (tree.fall < 0 && sim.felled.has(i)) {
+        tree.fall = 0;
+        const dir = this.vel.lengthSq() > 0.01 ? this.vel.clone().setY(0).normalize() : new THREE.Vector3(0, 0, -1);
+        tree.axis.set(dir.z, 0, -dir.x); // fall the way the ball was going
+      }
+      if (tree.fall < 0) continue;
+      tree.fall += dt;
+      const k = Math.min(1, tree.fall / 0.6), angle = k * k * (Math.PI / 2) * 0.95;
+      tree.top.quaternion.setFromAxisAngle(tree.axis, angle).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), tree.yaw));
+      if (tree.fall >= 0.6 && tree.fall - dt < 0.6) this.confetti.burst(tree.at.clone().add(new THREE.Vector3(0, 0.5, 0)), [this.theme.tree.leaf, "#ffffff", this.theme.tree.trunk], 0.5);
+      const shrink = Math.max(0, 1 - Math.max(0, tree.fall - 0.75) / 0.4);
+      tree.top.scale.setScalar(shrink); tree.top.visible = shrink > 0.01;
+    }
+    // rivers: the water runs downstream; frozen, it stops and ices over
+    if (this.river) {
+      const map = (this.river.water.material as THREE.MeshStandardMaterial).map!;
+      if (sim.freezeT <= 0) map.offset.x -= dt * 0.35;
+      const im = this.river.ice.material as THREE.MeshStandardMaterial;
+      im.opacity = this.iceLevel * 0.92; this.river.ice.visible = this.iceLevel > 0.01;
+    }
+    // the countdown ring round the ball, for whichever power is on
+    const left = Math.max(sim.slashT / SLASH_TIME, sim.freezeT / FREEZE_TIME, sim.magnetT / MAGNET_TIME);
+    const on = left > 0 && sim.state !== "sunk" && sim.state !== "warp";
+    this.timer.visible = on;
+    if (on) {
+      const frac = Math.round(Math.min(1, left) * 48) / 48;
+      if (frac !== this.timerFrac) {
+        this.timerFrac = frac;
+        this.timer.geometry.dispose();
+        this.timer.geometry = new THREE.RingGeometry(0.3, 0.36, 48, 1, Math.PI / 2, Math.PI * 2 * frac);
+      }
+      this.timer.position.set(this.ball.position.x, this.ball.position.y - BALL_RADIUS + 0.03, this.ball.position.z);
+      (this.timer.material as THREE.MeshBasicMaterial).opacity = left < 0.25 ? 0.5 + Math.sin(t * 25) * 0.4 : 0.9;
+    }
+    // the magnet's reach shows while you aim and while it's on
+    const zone = this.magnetZone.material as THREE.MeshBasicMaterial;
+    const showZone = this.ballDef.power === "magnet" && (sim.state === "rest" || sim.magnetT > 0);
+    zone.opacity += ((showZone ? (sim.magnetT > 0 ? 0.7 : 0.25) : 0) - zone.opacity) * Math.min(1, dt * 6);
+    this.magnetZone.visible = zone.opacity > 0.01;
     // frost: the ice sheet fades in and out; the windmill and moving blocks frost over
     this.iceLevel += ((sim.freezeT > 0 ? 1 : 0) - this.iceLevel) * Math.min(1, dt * 6);
     const ice = this.iceSheet.material as THREE.MeshStandardMaterial;
     ice.opacity = this.iceLevel * 0.85; this.iceSheet.visible = this.iceLevel > 0.01;
     // mecha: rings shrink onto the cup, a beam joins ball and cup
-    const pulling = sim.magnetT > 0 && sim.state === "moving";
+    const pulling = sim.magnetT > 0 && sim.state === "moving" && Math.hypot(this.ball.position.x - this.course.hole[0], this.ball.position.z - this.course.hole[2]) < MAGNET_RANGE;
     this.magnetRings.forEach((r, i) => {
-      r.visible = pulling;
+      r.visible = sim.magnetT > 0 && sim.state === "moving";
       const k = 1 - ((t * 1.2 + i / 3) % 1);
-      r.scale.setScalar(0.4 + k * 3.2); (r.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.9;
+      r.scale.setScalar(0.4 + k * (MAGNET_RANGE / 0.5 - 0.4)); (r.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.9;
     });
     const [hx, hy, hz] = this.course.hole, bp = this.ball.position, d = Math.hypot(bp.x - hx, bp.z - hz);
-    this.magnetBeam.visible = pulling && d < 5 && d > 0.2;
+    this.magnetBeam.visible = pulling && d > 0.2;
     if (this.magnetBeam.visible) {
       this.magnetBeam.position.copy(bp); this.magnetBeam.lookAt(hx, hy + 0.05, hz);
       this.magnetBeam.scale.set(1 + Math.sin(t * 40) * 0.4, 1 + Math.sin(t * 40) * 0.4, bp.distanceTo(new THREE.Vector3(hx, hy + 0.05, hz)));
@@ -435,10 +550,11 @@ export class HoleView {
   /** Samurai: the draw (a crescent slash ahead of the ball). */
   slash(): void { this.effects.slash(this.ball.position, this.vel, this.ballDef.colours.accent); }
   /** Samurai: it went through something. An X of light where it cut, sparks, and the thing flashes. */
-  cutAt(at: [number, number, number]): void {
+  cutAt(at: [number, number, number], tree?: number): void {
     const p = new THREE.Vector3(...at);
     this.effects.cross(p, this.vel);
     this.confetti.burst(p, ["#ffffff", "#ffd54f", "#ff4d5e"], 0.45);
+    if (tree !== undefined) return; // trees fall (see powerEffects) rather than flash
     let best: (typeof this.cuttable)[number] | null = null, bd = Infinity;
     for (const c of this.cuttable) { const d = c.obj.getWorldPosition(new THREE.Vector3()).distanceTo(p); if (d < bd) { bd = d; best = c; } }
     if (best && bd < 2.2) best.flash = 1;

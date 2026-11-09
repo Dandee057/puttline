@@ -1,6 +1,6 @@
 # Puttline
 
-Nine holes of mini golf in your browser, with real ball physics and nine themed arenas, from a sunny meadow to a neon arcade, a volcano and outer space. Every hole has a safe way round and a risky shortcut that can be a hole in one, or land you in the water.
+Nine holes of mini golf in your browser, with real ball physics and nine themed arenas, from a pine forest to a neon arcade, a volcano and outer space. Pick one of three golf balls, each with its own special power. Every hole has a safe way round and a risky shortcut that can be a hole in one, or land you in the water.
 
 **[Play it →](https://dandee057.github.io/puttline/)**
 
@@ -12,11 +12,12 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 ## Playing
 
 - **Pick your ball.** Three golf balls, each with its own look and one special power (E), usable once per hole:
-  - ⚔️ **Ronin**, a lacquered samurai ball in a headband, **Slashes**: a dash that cuts straight through blocks, bumpers, moving blocks and the windmill's blades.
-  - ❄️ **Frostbite**, a crystal ball with an ice crown, **Freezes** the hole for five seconds: the windmill and moving blocks stop, and the water or lava ices over so the ball can roll across it. Frost is the only power you can use before the putt. When the ice melts, a ball still out on it drops in.
-  - 🧲 **Mag-9**, a chrome robot ball with a blinking aerial, switches on the cup's **Magnet**: a rolling ball nearby is pulled in and steered onto the cup.
+  - ⚔️ **Ronin**, a lacquered samurai ball in a headband, **Slashes**: a big dash forward that cuts trees down for good and slices straight through blocks, bumpers, moving blocks and the windmill's blades.
+  - ❄️ **Frostbite**, a crystal ball with an ice crown, **Freezes** the hole for six seconds: rivers stop and turn to fast ice, the windmill and moving blocks stand still, and the water or lava ices over so the ball can roll across it. Frost is the only power you can use before the putt. When the ice melts, a ball still out on it drops in.
+  - 🧲 **Mag-9**, a chrome robot ball with a blinking aerial, switches on the cup's **Magnet** for a 1.5-second burst: a rolling ball inside the ring round the cup is pulled towards it. It doesn't brake the ball, so it rescues near misses, not bad putts, and switched on too early it runs out before the ball arrives.
 
-  The powers fill each other's gaps: Ronin handles things in the way, Frostbite handles timing and water, Mag-9 handles the finish. All three roll exactly the same, so every hole's proof still holds.
+  A ring round the ball counts down while a power is on. The powers fill each other's gaps: Ronin handles trees and things in the way, Frostbite handles rivers, water and timing, Mag-9 handles the finish. All three roll exactly the same, so every hole's proof still holds.
+- **Trees and rivers:** every arena has its own kind of tree to roll round (pines, autumn oaks, cacti, topiary, neon trees, street lamps, burnt trees, crystals), and most holes have a river whose current gently nudges a rolling ball off line.
 - **Putt:** drag anywhere and pull back like a slingshot. The further you pull, the harder the putt. Let go to hit.
 - **Look around:** ⟲ ⟳ or A / D, right-drag, or two fingers. Scroll or pinch to zoom. ◎ or O shows the whole hole.
 - **Rules:** a ball off the course costs a stroke and goes back where it was. After four over par the ball is picked up, so nobody gets stuck.
@@ -27,7 +28,7 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 
 ## How it works
 
-**Holes are text maps.** Each hole is a few lines of characters: `.` is green, `:` is a raised level, `^ v < >` are ramps, `o` a bumper, `#` a block, `_` a bridge, `W` the windmill, `G` a golden hole, `T` and `C` the tee and cup. A ramp that runs out over the water is a jump. Moving blocks are listed beside the map. Here is the windmill hole:
+**Holes are text maps.** Each hole is a few lines of characters: `.` is green, `:` is a raised level, `^ v < >` are ramps, `o` a bumper, `#` a block, `Y` a tree, `~` a river (flowing the hole's `flow` way), `_` a bridge, `W` the windmill, `G` a golden hole, `T` and `C` the tee and cup. A ramp that runs out over the water is a jump. Moving blocks are listed beside the map. Here is the windmill hole:
 
 ```
 ...
@@ -66,9 +67,11 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 
 **Three balls, one physics.** The balls ([`src/game/balls.ts`](src/game/balls.ts)) differ only in looks and power. Their skins are painted on canvases at load time, with no image files ([`src/render/balls.ts`](src/render/balls.ts)), and each wears a "topper" (headband and ribbons, ice crown, aerial and visor) that stays upright and faces the way the ball rolls. The powers live in the simulation, so they're tested like everything else:
 
-- **Slash** switches the ball's Rapier collision groups so it passes through obstacles (but never the rails), and finds what it cut with a shape query each step;
-- **Freeze** stops the clock that drives the windmill and moving blocks, and adds a temporary sheet of ice as a collider over the water;
-- **Magnet** steers a ball near the cup towards it, damps its sideways speed and caps its speed at the rim so it can't skip over.
+- **Slash** gives the ball a dash and switches its Rapier collision groups so it passes through obstacles (but never the rails), finding what it cut with a shape query each step; a tree it cuts has its collider removed for the rest of the hole;
+- **Freeze** stops the clock that drives the windmill and moving blocks, switches off river currents and makes rivers slippery, and adds a temporary sheet of ice as a collider over the water;
+- **Magnet** pulls a ball near the cup towards it and gently damps its sideways drift, for 1.5 seconds.
+
+A **river** pushes a rolling ball the way it flows, more gently than the grass slows it, so the ball always comes to rest.
 
 **Sound without files.** Putts, rail knocks, bumpers, the cup's rattle and the splash are synthesised with the Web Audio API ([`src/audio.ts`](src/audio.ts)).
 

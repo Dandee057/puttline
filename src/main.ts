@@ -150,7 +150,7 @@ function handle(events: Event[]): void {
       if (e.what === "bumper") { sfx.bumper(); game.view!.flashBumper(); }
       else if (e.what === "blade" || e.what === "slider") sfx.thunk(e.speed);
       else sfx.wall(e.speed);
-    } else if (e.type === "cut") { sfx.cut(); game.view!.cutAt(e.at); }
+    } else if (e.type === "cut") { sfx.cut(); game.view!.cutAt(e.at, e.tree); if (e.what === "tree") sfx.timber(); }
     else if (e.type === "thaw") { sfx.thaw(); game.view!.thaw(); }
     else if (e.type === "warp") { sfx.warp(); game.view!.sparkle("gold"); }
     else if (e.type === "warped") game.view!.sparkle("cup");
@@ -314,9 +314,9 @@ function usePower(p: Power): void {
   else if (p === "jump" && sim.jump()) { sfx.boing(); view.ring(); }
   else if (p === "special") {
     const power = game.ball.power;
-    if (power === "slash" && sim.slash()) { sfx.slash(); view.slash(); toast("Slash! Cutting through anything in the way"); }
-    else if (power === "freeze" && sim.freeze()) { sfx.freeze(); view.freezeBurst(); toast("Freeze! Everything stops and the edges ice over"); }
-    else if (power === "magnet" && sim.magnet()) { sfx.magnet(); view.magnetOn(); toast("Magnet on: the cup is pulling the ball in"); }
+    if (power === "slash" && sim.slash()) { sfx.slash(); view.slash(); toast("Slash! A dash that cuts through anything"); }
+    else if (power === "freeze" && sim.freeze()) { sfx.freeze(); view.freezeBurst(); toast("Freeze! Rivers, blades and water turn to ice"); }
+    else if (power === "magnet" && sim.magnet()) { sfx.magnet(); view.magnetOn(); toast("Magnet on: 1.5 seconds of pull inside the ring"); }
     else return;
   }
   else if (p === "redo") {

@@ -54,7 +54,7 @@ export interface CartApi {
 const FONT = '"Press Start 2P", ui-monospace, monospace';
 const C = { white: "#ffffff", gold: "#ffd54f", green: "#7dff9a", red: "#ff6b6b", cyan: "#6ee7ff", grey: "#8b93a7", ink: "#0b1020" };
 /** The ball's power in a few words, for the title screen (the pixel font is wide). */
-const POWER_SHORT = { slash: "CUTS THROUGH THINGS", freeze: "STOPS THE COURSE", magnet: "PULLS IT TO THE CUP" } as const;
+const POWER_SHORT = { slash: "DASH AND CUT DOWN TREES", freeze: "ICE THE RIVERS", magnet: "A QUICK PULL TO THE CUP" } as const;
 const PARS = HOLES.map((h) => h.par);
 const COURSE_PAR = PARS.reduce((a, b) => a + b, 0);
 const ZOOM = 9;
@@ -251,7 +251,7 @@ export function attach(api: CartApi): void {
         else sfx.wall(e.speed);
       } else if (e.type === "warp") { sfx.warp(); view?.sparkle("gold"); }
       else if (e.type === "warped") view?.sparkle("cup");
-      else if (e.type === "cut") { sfx.cut(); view?.cutAt(e.at); }
+      else if (e.type === "cut") { sfx.cut(); view?.cutAt(e.at, e.tree); if (e.what === "tree") sfx.timber(); }
       else if (e.type === "thaw") { sfx.thaw(); view?.thaw(); }
       else if (e.type === "sunk" && (game.phase === "rolling" || game.phase === "aim")) finishHole(game.strokes);
       else if (e.type === "out" && game.phase === "rolling" && game.outT <= 0) {

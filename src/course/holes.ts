@@ -7,29 +7,30 @@ import type { HoleDef } from "./parse.ts";
  */
 export const HOLES: HoleDef[] = [
   {
-    // Safe: left and up the wide lane. Risky: straight up the rail-less bridge into the golden hole.
-    name: "First Putt", par: 3, theme: "meadow", shortcut: "Straight up the bridge",
+    // Safe: left, between the pines, over the stream and up the wide lane. Risky: straight up the rail-less bridge
+    // into the golden hole. The stream pushes the ball left; a slash fells the pines, a freeze stills the stream.
+    name: "First Putt", par: 3, theme: "forest", flow: "w", shortcut: "Straight up the bridge",
     map: [
       "...  ",
       ".C. G",
       "... _",
+      "Y.Y _",
+      "~~~ _",
       "... _",
-      "... _",
-      "... _",
-      ".....",
+      "..Y..",
       "....T",
       "....."
     ]
   },
   {
     // Safe: up the lane and round the corner. Risky: jump the water onto the island and find the golden hole.
-    name: "Dogleg", par: 3, theme: "autumn", shortcut: "Jump to the island",
+    name: "Dogleg", par: 3, theme: "autumn", flow: "e", shortcut: "Jump to the island",
     map: [
       "......",
-      "....C.",
+      "..Y.C.",
       "......",
       "... _ ",
-      "... _ ",
+      "~~~ _ ",
       "... ..",
       "T.> .G",
       "... .."
@@ -44,14 +45,14 @@ export const HOLES: HoleDef[] = [
       ":::  .",
       "^^^  .",
       "...  .",
-      "...  .",
+      ".Y.  .",
       ".....T",
       "......"
     ]
   },
   {
     // Safe: anywhere through the bumpers. Risky: the golden hole in the far corner, off the edge if you're long.
-    name: "Pinball", par: 3, theme: "arcade", shortcut: "The far corner",
+    name: "Pinball", par: 3, theme: "arcade", flow: "w", shortcut: "The far corner",
     map: [
       "......G",
       "...C...",
@@ -60,14 +61,14 @@ export const HOLES: HoleDef[] = [
       ".......",
       "o..o..o",
       ".......",
-      ".......",
+      "~~~~~~~",
       "...T...",
       "......."
     ]
   },
   {
     // Safe: the open lane on the left. Risky: through the windmill and over its bridge to the golden hole.
-    name: "Windmill", par: 3, theme: "tulips", windmillSpeed: 0.22, shortcut: "Through the windmill",
+    name: "Windmill", par: 3, theme: "tulips", flow: "w", windmillSpeed: 0.22, shortcut: "Through the windmill",
     map: [
       "..   ",
       ".C G ",
@@ -75,8 +76,8 @@ export const HOLES: HoleDef[] = [
       ".. _ ",
       "..#W#",
       ".....",
-      ".....",
-      "...T.",
+      "~~~~~",
+      ".Y.T.",
       "....."
     ]
   },
@@ -91,7 +92,7 @@ export const HOLES: HoleDef[] = [
       "... _",
       "... _",
       "... _",
-      "....T",
+      "Y...T",
       "....."
     ],
     sliders: [
@@ -101,13 +102,13 @@ export const HOLES: HoleDef[] = [
   },
   {
     // Safe: round the wall. Risky: a full-strength bank off the right rail into the golden hole tucked in the corner.
-    name: "Bank Shot", par: 3, theme: "ice", shortcut: "Bank it off the right rail",
+    name: "Bank Shot", par: 3, theme: "ice", flow: "w", shortcut: "Bank it off the right rail",
     map: [
       "G....",
       " .C..",
-      ".....",
+      "~~~~~",
       "##...",
-      ".....",
+      "...Y.",
       ".T...",
       "....."
     ]
@@ -122,14 +123,14 @@ export const HOLES: HoleDef[] = [
       " _   ",
       " _   ",
       " _  ^",
-      ".....",
+      "Y....",
       "....T",
-      "....."
+      "..Y.."
     ]
   },
   {
     // Safe: up the ramp, past the block, down and through the windmill. Risky: the giant jump straight at the cup.
-    name: "Grand Finale", par: 4, theme: "space", windmillSpeed: 0.18, shortcut: "The giant jump",
+    name: "Grand Finale", par: 4, theme: "space", flow: "e", windmillSpeed: 0.18, shortcut: "The giant jump",
     map: [
       ".......",
       ".C.....",
@@ -140,8 +141,8 @@ export const HOLES: HoleDef[] = [
       "... :::",
       "... :::",
       "... ^^^",
-      ".......",
-      ".T.....",
+      "~~~~~~~",
+      ".T..Y..",
       "......."
     ],
     sliders: [{ from: [4, 7], to: [6, 7], period: 3.6, phase: 0.2 }]

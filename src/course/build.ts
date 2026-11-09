@@ -13,6 +13,7 @@ export const CUP_RADIUS = 0.3;
 export const CUP_DEPTH = 0.42;
 export const GOLD_RADIUS = 0.25;   // barely wider than the ball: the shortcut has to be hit just right
 export const BUMPER_RADIUS = 0.34;
+export const TREE_RADIUS = 0.42;  // a trunk in the middle of its square: a ball fits past either side
 const CUP_SEGMENTS = 32;           // a multiple of 8, so rays from the centre pass through the square's corners
 
 export interface MeshPart { positions: number[]; indices: number[] }
@@ -31,6 +32,9 @@ export interface Course {
   skirt: MeshPart;
   solids: Solid[];
   bumpers: { x: number; y: number; z: number }[];
+  trees: { x: number; y: number; z: number }[];
+  /** River squares, and which way they flow (x, z). */
+  river: { cells: Cell[]; flow: [number, number] };
   windmills: Windmill[];
   tee: [number, number, number];
   hole: [number, number, number];
@@ -70,14 +74,16 @@ function corners(cell: Cell): [number, number][] {
   return [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
 }
 
+const FLOW: Record<string, [number, number]> = { n: [0, -1], s: [0, 1], e: [1, 0], w: [-1, 0] };
+
 export function buildHole(def: HoleDef): Course {
-  return buildGrid(parseHole(def));
+  return buildGrid(parseHole(def), FLOW[def.flow ?? "e"]);
 }
 
-export function buildGrid(grid: Grid): Course {
+export function buildGrid(grid: Grid, flow: [number, number] = [1, 0]): Course {
   const green = part(), cup = part(), sides = part(), skirt = part();
   const solids: Solid[] = [];
-  const bumpers: Course["bumpers"] = [], windmills: Windmill[] = [];
+  const bumpers: Course["bumpers"] = [], trees: Course["trees"] = [], windmills: Windmill[] = [];
   const lips: Course["lips"] = [];
 
   for (const cell of grid.cells) {
@@ -114,6 +120,7 @@ export function buildGrid(grid: Grid): Course {
       solids.push({ kind: "block", points: box(k[0][0] + inset, ch - 0.01, k[0][1] + inset, k[2][0] - inset, top, k[2][1] - inset) });
     }
     if (cell.bumper) bumpers.push({ x: cx, y: ch, z: cz });
+    if (cell.tree) trees.push({ x: cx, y: ch, z: cz });
     if (cell.windmill) {
       // A building across the square with a tunnel through the middle; the blades turn in front of it (+z side)
       const tunnel = 0.9, depth = 0.9, height = 1.25, z0 = cz - depth / 2, z1 = cz + depth / 2;
@@ -129,7 +136,8 @@ export function buildGrid(grid: Grid): Course {
   const [tx, tz] = cellCentre(grid.tee), [hx, hz] = cellCentre(grid.cup);
   const gold = grid.gold ? (() => { const [gx, gz] = cellCentre(grid.gold!); return [gx, cornerHeights(grid.gold!)[0], gz] as [number, number, number]; })() : null;
   return {
-    grid, green, cup, sides, skirt, solids, bumpers, windmills, gold, lips,
+    grid, green, cup, sides, skirt, solids, bumpers, trees, windmills, gold, lips,
+    river: { cells: grid.cells.filter((c) => c.river), flow },
     tee: [tx, cornerHeights(grid.tee)[0], tz],
     hole: [hx, cornerHeights(grid.cup)[0], hz],
     bounds: { x0: Math.min(...xs) * CELL, z0: Math.min(...zs) * CELL, x1: (Math.max(...xs) + 1) * CELL, z1: (Math.max(...zs) + 1) * CELL }

@@ -23,7 +23,12 @@ export interface Theme {
   bloom: number;                         // strength
   particles: Particles; particleColor: string;
   scenery: (g: THREE.Group, rand: () => number, around: Around) => void;
+  /** The trees on the course (Y squares) and the river (~ squares) in this arena. */
+  tree: TreeStyle;
+  river: { water: string; foam: string; glow: number };
 }
+
+export interface TreeStyle { kind: "pine" | "round" | "cactus" | "topiary" | "neon" | "lamp" | "crystal" | "burnt"; leaf: string; trunk: string; snow?: boolean }
 
 /** Where scenery may go: around the hole, not on it. */
 export interface Around { cx: number; cz: number; radius: number; spot(min?: number, max?: number): [number, number] }
@@ -55,7 +60,24 @@ function pine(g: THREE.Group, x: number, y: number, z: number, leaf: string, s =
   }
 }
 
-const THEMES: Record<ThemeName, Theme> = {
+type BaseTheme = Omit<Theme, "tree" | "river">;
+const BASE: Record<ThemeName, BaseTheme> = {
+  forest: {
+    label: "Pine Forest",
+    sky: ["#7fb7d6", "#c6e0e6", "#eef0dc"], fog: "#d3e3d2", fogNear: 30, fogFar: 120,
+    sun: "#ffe9c2", sunIntensity: 2.5, hemiSky: "#e6f3ff", hemiGround: "#4f6b45", hemiIntensity: 1.5, exposure: 1.05,
+    below: "water", belowColor: "#3d8f8a",
+    green: ["#4fa84a", "#449940"], rail: "#8a6142", trim: "#c6ff7a", trimGlow: 0.5,
+    side: "#6d4c35", block: "#8d6e63", building: "#f3ead8", roof: "#7a3b2e", slider: "#ffb300", bumper: "#ec4899",
+    accent: "#fffbe6", bloom: 0.3, particles: "pollen", particleColor: "#e9ff9e",
+    scenery(g, rand, A) {
+      for (let i = 0; i < 11; i++) {
+        const [x, z] = A.spot(5, 26), y = island(g, x, z, 2 + rand() * 2.5, "#4c9a46", "#8a7458");
+        for (let k = 0; k < 3 + rand() * 4; k++) pine(g, x + (rand() - 0.5) * 3.4, y, z + (rand() - 0.5) * 3.4, rand() < 0.5 ? "#2f7a3e" : "#3c8c45", 0.8 + rand() * 0.9);
+        for (let k = 0; k < 3; k++) put(g, new THREE.SphereGeometry(0.18, 6, 4), mat(k ? "#c9a27a" : "#d64545"), x + (rand() - 0.5) * 3, y + 0.12, z + (rand() - 0.5) * 3, 1);
+      }
+    }
+  },
   meadow: {
     label: "Sunny Meadow",
     sky: ["#6ec6f0", "#b9e4f5", "#f3f0dc"], fog: "#e8f0e0", fogNear: 50, fogFar: 150,
@@ -255,6 +277,106 @@ const THEMES: Record<ThemeName, Theme> = {
     }
   }
 };
+
+const TREES: Record<ThemeName, TreeStyle> = {
+  forest: { kind: "pine", leaf: "#2f7a3e", trunk: "#6b4a2e" },
+  meadow: { kind: "round", leaf: "#57a84b", trunk: "#7a5232" },
+  autumn: { kind: "round", leaf: "#e8742b", trunk: "#6b4429" },
+  desert: { kind: "cactus", leaf: "#4f9a4a", trunk: "#4f9a4a" },
+  arcade: { kind: "neon", leaf: "#ff3df2", trunk: "#1c1c2e" },
+  tulips: { kind: "topiary", leaf: "#3f9a45", trunk: "#d84a7c" },
+  city: { kind: "lamp", leaf: "#ffd600", trunk: "#2b2f3f" },
+  ice: { kind: "pine", leaf: "#2f6f5e", trunk: "#5a4232", snow: true },
+  volcano: { kind: "burnt", leaf: "#ff6d00", trunk: "#2b2220" },
+  space: { kind: "crystal", leaf: "#b388ff", trunk: "#23233a" }
+};
+const RIVERS: Record<ThemeName, Theme["river"]> = {
+  forest: { water: "#3aa7c9", foam: "#d9f6ff", glow: 0 },
+  meadow: { water: "#45b4d9", foam: "#e3f8ff", glow: 0 },
+  autumn: { water: "#3f8fa6", foam: "#f6e3c8", glow: 0 },
+  desert: { water: "#2fc2c7", foam: "#e6fffb", glow: 0 },
+  arcade: { water: "#0a6f8a", foam: "#ff7cf5", glow: 0.35 },
+  tulips: { water: "#4aa6d6", foam: "#ffffff", glow: 0 },
+  city: { water: "#2a4a9a", foam: "#9fb4ff", glow: 0.25 },
+  ice: { water: "#58b9e6", foam: "#ffffff", glow: 0.1 },
+  volcano: { water: "#2b8fb5", foam: "#ffd2a8", glow: 0.2 },
+  space: { water: "#4a2fa8", foam: "#e0d4ff", glow: 0.35 }
+};
+const THEMES = Object.fromEntries(Object.entries(BASE).map(([k, t]) => [k, { ...t, tree: TREES[k as ThemeName], river: RIVERS[k as ThemeName] }])) as Record<ThemeName, Theme>;
+
+/**
+ * A tree for a Y square, standing at the origin, in this arena's style. Its trunk matches the physics (a
+ * TREE_RADIUS cylinder); the canopy is up high, out of the ball's way. Returned as two parts so a cut tree can
+ * fall: the stump stays, the rest topples.
+ */
+export function courseTree(style: TreeStyle, night: boolean): { stump: THREE.Group; top: THREE.Group } {
+  const stump = new THREE.Group(), top = new THREE.Group();
+  const lit = (c: string, k = 0) => mat(c, k ? { emissive: c, emissiveIntensity: k, roughness: 0.5 } : {});
+  const trunk = lit(style.trunk), leaf = lit(style.leaf, night ? 0.25 : 0);
+  const r = 0.42;
+  const add = (g: THREE.Group, geo: THREE.BufferGeometry, m: THREE.Material, y: number, s = 1) => { const mesh = put(g, geo, m, 0, y, 0, s); mesh.castShadow = true; return mesh; };
+  switch (style.kind) {
+    case "pine": case "burnt": case "round": case "topiary": {
+      add(stump, new THREE.CylinderGeometry(r, r * 1.1, 0.3, 8), trunk, 0.15);
+      add(top, new THREE.CylinderGeometry(r * 0.75, r, 1.1, 8), trunk, 0.85);
+      if (style.kind === "pine") for (let k = 0; k < 3; k++) {
+        add(top, new THREE.ConeGeometry(1.15 - k * 0.28, 1.0, 8), lit(style.snow && k === 2 ? "#f4f8ff" : style.leaf), 1.6 + k * 0.55);
+        if (style.snow && k < 2) add(top, new THREE.ConeGeometry(0.55 - k * 0.15, 0.3, 8), lit("#f4f8ff"), 1.95 + k * 0.55);
+      } else if (style.kind === "round") {
+        add(top, new THREE.IcosahedronGeometry(1.0, 0), leaf, 2.1);
+        add(top, new THREE.IcosahedronGeometry(0.6, 0), leaf, 2.7);
+      } else if (style.kind === "topiary") {
+        add(top, new THREE.SphereGeometry(0.75, 12, 8), leaf, 1.85);
+        add(top, new THREE.SphereGeometry(0.45, 12, 8), leaf, 2.75);
+        for (let k = 0; k < 6; k++) { const a = k * 1.05; const m = put(top, new THREE.SphereGeometry(0.1, 6, 4), lit(style.trunk, 0.3), Math.cos(a) * 0.7, 1.95, Math.sin(a) * 0.7); m.castShadow = false; }
+      } else {
+        // burnt: bare black branches with glowing embers in the cracks
+        for (let k = 0; k < 4; k++) { const b = put(top, new THREE.CylinderGeometry(0.05, 0.12, 0.9, 5), trunk, 0, 1.6, 0); b.rotation.set(0.7, k * 1.6, 0); b.position.set(Math.sin(k * 1.6) * 0.3, 1.6 + k * 0.1, Math.cos(k * 1.6) * 0.3); }
+        add(top, new THREE.TorusGeometry(r * 0.78, 0.03, 4, 12), lit(style.leaf, 2.5), 0.9).rotation.x = Math.PI / 2;
+      }
+      break;
+    }
+    case "cactus": {
+      add(stump, new THREE.CylinderGeometry(r, r, 0.3, 10), trunk, 0.15);
+      add(top, new THREE.CylinderGeometry(r * 0.9, r, 1.6, 10), trunk, 1.1);
+      add(top, new THREE.SphereGeometry(r * 0.9, 10, 6), trunk, 1.9);
+      for (const side of [-1, 1]) {
+        const arm = put(top, new THREE.CylinderGeometry(0.16, 0.16, 0.7, 8), trunk, side * 0.62, 1.35 + side * 0.15, 0);
+        put(top, new THREE.CylinderGeometry(0.16, 0.16, 0.45, 8), trunk, side * 0.42, 1.15 + side * 0.15, 0).rotation.z = Math.PI / 2;
+        arm.castShadow = true;
+      }
+      add(top, new THREE.SphereGeometry(0.12, 6, 4), lit("#ff5c8a"), 2.25);
+      break;
+    }
+    case "neon": {
+      add(stump, new THREE.CylinderGeometry(r, r, 0.3, 6), trunk, 0.15);
+      add(top, new THREE.CylinderGeometry(r * 0.6, r, 1.2, 6), trunk, 0.9);
+      for (let k = 0; k < 3; k++) {
+        const ring = put(top, new THREE.TorusGeometry(0.95 - k * 0.25, 0.06, 6, 6), lit(k % 2 ? "#00e5ff" : style.leaf, 3), 0, 1.6 + k * 0.45, 0);
+        ring.rotation.x = Math.PI / 2;
+      }
+      add(top, new THREE.OctahedronGeometry(0.22), lit("#ffffff", 3), 2.85);
+      break;
+    }
+    case "lamp": {
+      // a street lamp: a heavy post with a glowing head
+      add(stump, new THREE.CylinderGeometry(r, r * 1.05, 0.3, 8), trunk, 0.15);
+      add(top, new THREE.CylinderGeometry(r * 0.55, r * 0.8, 0.5, 8), trunk, 0.55);
+      add(top, new THREE.CylinderGeometry(0.1, 0.12, 2.0, 6), trunk, 1.8);
+      const arm = add(top, new THREE.BoxGeometry(0.9, 0.08, 0.08), trunk, 2.75); arm.position.x = 0.4;
+      const head = add(top, new THREE.SphereGeometry(0.2, 10, 6), lit(style.leaf, 3), 2.62); head.position.x = 0.8;
+      break;
+    }
+    case "crystal": {
+      add(stump, new THREE.CylinderGeometry(r, r * 1.1, 0.3, 6), trunk, 0.15);
+      const glass = new THREE.MeshStandardMaterial({ color: style.leaf, emissive: style.leaf, emissiveIntensity: 1.2, roughness: 0.15, metalness: 0.2, flatShading: true });
+      const main = add(top, new THREE.OctahedronGeometry(0.55), glass, 1.3); main.scale.set(0.75, 2.1, 0.75);
+      for (let k = 0; k < 3; k++) { const c = put(top, new THREE.OctahedronGeometry(0.3), glass, Math.cos(k * 2.1) * 0.45, 0.75, Math.sin(k * 2.1) * 0.45); c.scale.set(0.7, 1.8, 0.7); c.rotation.z = Math.cos(k * 2.1) * 0.5; c.rotation.x = Math.sin(k * 2.1) * 0.5; }
+      break;
+    }
+  }
+  return { stump, top };
+}
 
 export const themeFor = (name: ThemeName | undefined): Theme => THEMES[name ?? "meadow"];
 export const ALL_THEMES = THEMES;
