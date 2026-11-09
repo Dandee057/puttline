@@ -10,8 +10,10 @@
      Puttline.create({ onExit }) → { state, update(dt), drawScreen(g, W, H),
        press("start"|"sound"), hold(k, down), click(), toMenu(), pause(p), stop(), … }
 
-   Controls: ◀ ▶ aim · ▲ ▼ power · A putt · B overview
-             while the ball rolls: A jump · B toot · START redo (once per hole each)
+   Controls: title: ◀ ▶ pick a ball (Ronin, Frostbite or Mag-9)
+             ◀ ▶ aim · ▲ ▼ power · A putt · B overview
+             while the ball rolls: A jump · B toot · ▲/▼ the ball's power ·
+             START redo (once per hole each)
    ========================================================================= */
 (function () {
   "use strict";
@@ -40,8 +42,8 @@
       WIDTH: 800, HEIGHT: 400, ready: true, focus: { x: 400, y: 200 },
       state: "menu", soundOn: true, grid: true,
       hints: {
-        menu: "ENTER: START   ARROWS: AIM + POWER", menuShort: "A: START",
-        play: "ARROWS: AIM + POWER   A: PUTT   B: MAP", playShort: "A:PUTT B:MAP",
+        menu: "ENTER: START   LEFT/RIGHT: PICK A BALL", menuShort: "A:START <>:BALL",
+        play: "ARROWS: AIM + POWER   A: PUTT   B: MAP   UP WHILE ROLLING: POWER", playShort: "A:PUTT B:MAP",
         over: "ENTER / A: PLAY AGAIN", overShort: "A: AGAIN"
       },
       padLabels: { left: "\u25C0", right: "\u25B6", up: "\u25B2", down: "\u25BC", jump: "PUTT", shoot: "MAP", startPlay: "REDO" }

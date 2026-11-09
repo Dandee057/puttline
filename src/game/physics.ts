@@ -18,10 +18,26 @@ const BUMPER_KICK = 1.25;
 const MAX_HOP = 1.1;
 const TOOT_BOOST = 3.2;              // power-ups
 const TOOT_MIN = 3.5;
-const JUMP_SPEED = 4.4;              // about 1 unit of height                 // fastest the ball may rise over flat green, units/s (a hop of ~6 cm)
+const JUMP_SPEED = 4.4;              // about 1 unit of height
+// The three balls' special powers (see src/game/balls.ts)
+export const SLASH_TIME = 1.5;       // samurai: seconds the ball cuts through blocks, bumpers, sliders and blades
+const SLASH_SPEED = 6;               // and the dash it gets as it draws
+export const FREEZE_TIME = 5;        // frost: seconds the windmill and moving blocks stop and the water is ice
+const ICE_DRAG = 0.35;               // on ice the ball keeps rolling: this much of the grass's resistance
+export const MAGNET_TIME = 3;        // mecha: seconds the cup pulls the ball in
+const MAGNET_RANGE = 5;              // from this far away
+const MAGNET_PULL = 9;               // units/s² at the edge of range, more up close
+/** Membership/filter bits (Rapier InteractionGroups: memberships << 16 | filter). Obstacles are group 2. */
+const OBSTACLE_GROUPS = (0x0002 << 16) | 0xffff;
+const BALL_NORMAL = 0xffffffff, BALL_CUTTING = (0xffff << 16) | 0xfffd;
 
+export type Obstacle = "block" | "building" | "bumper" | "blade" | "slider";
 export type Event =
-  | { type: "hit"; what: "rail" | "block" | "building" | "bumper" | "blade" | "slider"; speed: number }
+  | { type: "hit"; what: "rail" | Obstacle; speed: number }
+  /** The samurai ball cut through something. */
+  | { type: "cut"; what: Obstacle; at: [number, number, number] }
+  /** The ice from a freeze has melted. */
+  | { type: "thaw" }
   | { type: "sunk" } | { type: "out" } | { type: "rest" }
   /** Into the golden hole: the ball is in the tube for a moment, then drops into the cup. */
   | { type: "warp" } | { type: "warped" };
@@ -61,6 +77,15 @@ export class Sim {
   private kinds = new Map<number, Extract<Event, { type: "hit" }>["what"] | "green">();
   private movers: Mover[] = [];
   private events = new RAPIER.EventQueue(true);
+  /** Time on the clock the windmill and moving blocks follow: it stands still while frozen. */
+  private kinTime = 0;
+  /** Seconds left on each special power (0 when off). */
+  slashT = 0;
+  freezeT = 0;
+  magnetT = 0;
+  private cut = new Set<number>();
+  private ice: RAPIER.Collider | null = null;
+  private probe = new RAPIER.Ball(BALL_RADIUS * 1.05);
 
   constructor(course: Course, def: HoleDef, start?: { pos?: [number, number, number]; time?: number }) {
     this.course = course; this.def = def;
@@ -75,11 +100,12 @@ export class Sim {
       const desc = RAPIER.ColliderDesc.convexHull(new Float32Array(s.points));
       if (!desc) continue;
       const c = this.world.createCollider(bouncy(desc, s.kind === "rail" ? 0.72 : 0.6, 0.15), fixed);
+      if (s.kind !== "rail") c.setCollisionGroups(OBSTACLE_GROUPS);
       this.kinds.set(c.handle, s.kind);
     }
     for (const b of course.bumpers) {
       const c = this.world.createCollider(bouncy(RAPIER.ColliderDesc.cylinder(0.25, BUMPER_RADIUS).setTranslation(b.x, b.y + 0.25, b.z), 1, 0.05)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS), fixed);
+        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS).setCollisionGroups(OBSTACLE_GROUPS), fixed);
       this.kinds.set(c.handle, "bumper");
     }
     // Windmill blades: four paddles on a hub, turning in the plane facing the tee
@@ -88,7 +114,7 @@ export class Sim {
       for (let i = 0; i < 4; i++) {
         const a = (i * Math.PI) / 2, half = w.bladeLength / 2;
         const desc = bouncy(RAPIER.ColliderDesc.cuboid(0.13, half, 0.05), 0.5, 0.2)
-          .setTranslation(-Math.sin(a) * half, Math.cos(a) * half, 0).setRotation(quatZ(a));
+          .setTranslation(-Math.sin(a) * half, Math.cos(a) * half, 0).setRotation(quatZ(a)).setCollisionGroups(OBSTACLE_GROUPS);
         this.kinds.set(this.world.createCollider(desc, body).handle, "blade");
       }
       this.movers.push({ body, kind: "blade" });
@@ -98,7 +124,7 @@ export class Sim {
       const y = cornerHeights(course.grid.at(s.from[0], s.from[1])!)[0];
       const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(x, y + 0.26, z));
       const alongX = s.from[1] === s.to[1];
-      const c = this.world.createCollider(bouncy(RAPIER.ColliderDesc.cuboid(alongX ? 0.9 : 0.35, 0.26, alongX ? 0.35 : 0.9), 0.6, 0.2), body);
+      const c = this.world.createCollider(bouncy(RAPIER.ColliderDesc.cuboid(alongX ? 0.9 : 0.35, 0.26, alongX ? 0.35 : 0.9), 0.6, 0.2).setCollisionGroups(OBSTACLE_GROUPS), body);
       this.kinds.set(c.handle, "slider");
       this.movers.push({ body, kind: "slider" });
     }
@@ -111,7 +137,8 @@ export class Sim {
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Multiply).setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Multiply)
       .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS), this.ball);
     this.time = start?.time ?? 0;
-    this.moveKinematics(this.time, true);
+    this.kinTime = this.time;
+    this.moveKinematics(this.kinTime, true);
   }
 
   /** Hit the ball along (dx, dz) with power 0–1. */
@@ -156,9 +183,58 @@ export class Sim {
     return true;
   }
 
+  /**
+   * Samurai: draw the blade. The ball dashes forward and, for a moment, cuts straight through blocks, bumpers,
+   * moving blocks, windmill blades and the windmill's walls (never the rails). Only while it's rolling.
+   */
+  slash(): boolean {
+    if (this.state !== "moving") return false;
+    const v = this.ball.linvel();
+    let dx = v.x, dz = v.z, s = Math.hypot(dx, dz);
+    if (s < 0.05) { [dx, dz] = this.lastDir; s = 1; }
+    const speed = Math.min(MAX_SPEED, Math.max(SLASH_SPEED, Math.hypot(v.x, v.z)));
+    const vel = { x: (dx / s) * speed, y: v.y, z: (dz / s) * speed };
+    this.ball.setLinvel(vel, true); this.rollWith(vel);
+    this.slashT = SLASH_TIME; this.cut.clear();
+    this.ballCollider.setCollisionGroups(BALL_CUTTING);
+    this.still = 0;
+    return true;
+  }
+
+  /**
+   * Frost: freeze the hole. The windmill and moving blocks stop, and the water inside the course turns to ice the
+   * ball can roll across (and slide a long way on). Usable before a putt too. When it thaws, a ball left on the ice
+   * drops in the water.
+   */
+  freeze(): boolean {
+    if (this.state === "sunk" || this.state === "warp" || this.state === "out") return false;
+    this.freezeT = FREEZE_TIME;
+    if (!this.ice) {
+      const b = this.course.bounds, hx = (b.x1 - b.x0) / 2 + 0.6, hz = (b.z1 - b.z0) / 2 + 0.6;
+      this.ice = this.world.createCollider(RAPIER.ColliderDesc.cuboid(hx, 0.05, hz).setTranslation((b.x0 + b.x1) / 2, -0.05, (b.z0 + b.z1) / 2)
+        .setFriction(0.6).setRestitution(0.05).setFrictionCombineRule(RAPIER.CoefficientCombineRule.Multiply)
+        .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Multiply));
+    }
+    return true;
+  }
+
+  /** Mecha: switch on the cup's magnet. A rolling ball within range is pulled in and steered onto the cup. */
+  magnet(): boolean {
+    if (this.state !== "moving") return false;
+    this.magnetT = MAGNET_TIME;
+    this.still = 0;
+    return true;
+  }
+
+  /** Whether there's green (not water) under the ball. */
+  overGreen(p = this.ball.translation()): boolean {
+    return !!this.course.grid.at(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
+  }
+
   /** Put the ball somewhere, at rest (after going out of bounds, or a new hole). */
   place(p: [number, number, number]): void {
     this.lastRest = [...p];
+    this.endSlash(); this.magnetT = 0;
     this.ball.setGravityScale(1, true);
     this.ball.setTranslation({ x: p[0], y: p[1], z: p[2] }, true);
     this.ball.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -170,9 +246,13 @@ export class Sim {
   step(): Event[] {
     const out: Event[] = [];
     this.time += DT;
-    this.moveKinematics(this.time);
+    if (this.freezeT > 0) { if ((this.freezeT -= DT) <= 0) { this.thaw(); out.push({ type: "thaw" }); } }
+    else this.kinTime += DT; // the windmill and moving blocks stand still while frozen
+    this.moveKinematics(this.kinTime);
     const grounded = this.onGround();
-    if (this.state === "moving" && grounded) this.rollingResistance();
+    if (this.state === "moving" && grounded) this.rollingResistance(this.onIce() ? ICE_DRAG : 1);
+    if (this.state === "moving" && this.magnetT > 0) this.pull();
+    if (this.slashT > 0) this.cutThrough(out);
     const before = this.ball.linvel(), impact = Math.hypot(before.x, before.z);
     this.world.step(this.events);
 
@@ -235,7 +315,14 @@ export class Sim {
     const speed = Math.hypot(v.x, v.y, v.z);
     // never "stopped" while hanging over a cup: let it drop
     const overCup = Math.hypot(p.x - hx, p.z - hz) < CUP_RADIUS || (!!g && Math.hypot(p.x - g[0], p.z - g[2]) < GOLD_RADIUS);
-    this.still = speed < REST_SPEED && grounded && !overCup ? this.still + DT : 0;
+    const pulled = this.magnetT > 0 && Math.hypot(p.x - hx, p.z - hz) < MAGNET_RANGE;
+    this.still = speed < REST_SPEED && grounded && !overCup && !pulled ? this.still + DT : 0;
+    if (this.still >= REST_TIME && this.ice && !this.overGreen()) {
+      // stopped on the ice: it thaws under the ball, which drops in the water (and goes back where it was)
+      this.freezeT = 0; this.thaw(); out.push({ type: "thaw" });
+      this.still = 0;
+      return out;
+    }
     if (this.still >= REST_TIME) {
       this.place([p.x, p.y, p.z]);
       this.lastRest = [p.x, p.y, p.z];
@@ -279,14 +366,66 @@ export class Sim {
   private onGround(): boolean {
     let touching = false;
     this.world.contactPair(this.ballCollider, this.ground, (m) => { if (m.numContacts() > 0) touching = true; });
+    return touching || this.onIce();
+  }
+
+  private onIce(): boolean {
+    if (!this.ice) return false;
+    let touching = false;
+    this.world.contactPair(this.ballCollider, this.ice, (m) => { if (m.numContacts() > 0) touching = true; });
     return touching;
   }
 
-  /** Slow a rolling ball by a steady amount, as the grass does. */
-  private rollingResistance(): void {
+  private thaw(): void {
+    if (this.ice) { this.world.removeCollider(this.ice, true); this.ice = null; }
+    // a ball sitting on the ice now falls in
+    if (this.state === "rest" && !this.overGreen()) { this.state = "moving"; this.still = 0; }
+  }
+
+  /** The cup's magnet: pull towards the cup, damp the sideways drift, and slow it near the rim so it drops. */
+  private pull(): void {
+    this.magnetT = Math.max(0, this.magnetT - DT);
+    const p = this.ball.translation(), [hx, , hz] = this.course.hole;
+    let dx = hx - p.x, dz = hz - p.z;
+    const d = Math.hypot(dx, dz);
+    if (d > MAGNET_RANGE || d < 1e-3) return;
+    dx /= d; dz /= d;
+    const v = this.ball.linvel();
+    const along = v.x * dx + v.z * dz, sx = v.x - along * dx, sz = v.z - along * dz;
+    const a = MAGNET_PULL * (1.6 - d / MAGNET_RANGE) * DT;
+    let nx = (along + a) * dx + sx * 0.96, nz = (along + a) * dz + sz * 0.96;
+    const cap = d < 1.4 ? 1.6 + d : MAX_SPEED, s = Math.hypot(nx, nz);
+    if (s > cap) { nx *= cap / s; nz *= cap / s; }
+    const vel = { x: nx, y: v.y, z: nz };
+    this.ball.setLinvel(vel, true); this.rollWith(vel);
+  }
+
+  /** While slashing, note each obstacle the ball passes through (for the effect) and end it once clear. */
+  private cutThrough(out: Event[]): void {
+    const p = this.ball.translation();
+    let inside = false;
+    this.world.intersectionsWithShape(p, { x: 0, y: 0, z: 0, w: 1 }, this.probe, (c) => {
+      const what = this.kinds.get(c.handle);
+      if (!what || what === "green" || what === "rail") return true;
+      inside = true;
+      if (!this.cut.has(c.handle)) { this.cut.add(c.handle); out.push({ type: "cut", what, at: [p.x, p.y, p.z] }); }
+      return true;
+    });
+    // never let the blade go back in while the ball is still inside something
+    if ((this.slashT -= DT) <= 0 && !inside) this.endSlash();
+    else if (this.slashT <= 0) this.slashT = DT;
+  }
+
+  private endSlash(): void {
+    this.slashT = 0;
+    this.ballCollider.setCollisionGroups(BALL_NORMAL);
+  }
+
+  /** Slow a rolling ball by a steady amount, as the grass does (less on ice). */
+  private rollingResistance(scale = 1): void {
     const v = this.ball.linvel(), s = Math.hypot(v.x, v.z);
     if (s < 1e-4) return;
-    const k = Math.max(0, s - ROLL_DECEL * DT) / s;
+    const k = Math.max(0, s - ROLL_DECEL * scale * DT) / s;
     this.ball.setLinvel({ x: v.x * k, y: v.y, z: v.z * k }, true);
     const w = this.ball.angvel();
     this.ball.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, true);

@@ -10,6 +10,8 @@ import { isMuted, setMuted, sfx, unlockAudio } from "./audio.ts";
 import { Stage, yawFacing } from "./render/stage.ts";
 import { HoleView } from "./render/world.ts";
 import { themeFor } from "./render/themes.ts";
+import { BALLS, ballById, type BallDef } from "./game/balls.ts";
+import { ballPreview } from "./render/balls.ts";
 
 /**
  * The game: one hole at a time. Physics runs at a fixed step, the picture at whatever the screen can do.
@@ -35,8 +37,10 @@ const game = {
   index: 0,
   scores: [] as (number | undefined)[],
   aces: [] as boolean[],
-  /** Power-ups left on this hole. */
-  powers: { toot: true, jump: true, redo: true },
+  /** The ball you're playing as. */
+  ball: ballById(readBall()) as BallDef,
+  /** Power-ups left on this hole: the three everyone has, and your ball's special. */
+  powers: { toot: true, jump: true, redo: true, special: true },
   /** Where the last shot was played from, and the strokes before it: what Redo goes back to. */
   lastShot: null as { from: [number, number, number]; strokes: number } | null,
   outTimer: 0,
@@ -58,11 +62,11 @@ function loadHole(i: number): void {
   game.view && (stage.scene.remove(game.view.group), game.view.dispose());
   game.sim?.free();
   game.index = i; game.def = HOLES[i]; game.strokes = 0;
-  game.powers = { toot: true, jump: true, redo: true }; game.lastShot = null; clearTimeout(game.outTimer);
+  game.powers = { toot: true, jump: true, redo: true, special: true }; game.lastShot = null; clearTimeout(game.outTimer);
   game.course = buildHole(game.def);
   game.sim = new physics!.Sim(game.course, game.def);
   const theme = themeFor(game.def.theme);
-  game.view = new HoleView(game.course, game.def, theme);
+  game.view = new HoleView(game.course, game.def, theme, game.ball);
   game.field = distanceField(game.course);
   stage.scene.add(game.view.group);
   stage.setTheme(theme, game.course.bounds);
@@ -146,7 +150,9 @@ function handle(events: Event[]): void {
       if (e.what === "bumper") { sfx.bumper(); game.view!.flashBumper(); }
       else if (e.what === "blade" || e.what === "slider") sfx.thunk(e.speed);
       else sfx.wall(e.speed);
-    } else if (e.type === "warp") { sfx.warp(); game.view!.sparkle("gold"); }
+    } else if (e.type === "cut") { sfx.cut(); game.view!.cutAt(e.at); }
+    else if (e.type === "thaw") { sfx.thaw(); game.view!.thaw(); }
+    else if (e.type === "warp") { sfx.warp(); game.view!.sparkle("gold"); }
     else if (e.type === "warped") game.view!.sparkle("cup");
     else if (e.type === "sunk" && (game.phase === "rolling" || game.phase === "aim")) { aiming = null; meter(0, false); finishHole(game.strokes); }
     else if (e.type === "out" && game.phase === "rolling") {
@@ -290,13 +296,14 @@ function shoot(dir: THREE.Vector2, power: number): void {
 
 /* ---------- Power-ups: once per hole each ---------- */
 
-type Power = "toot" | "jump" | "redo";
+type Power = "toot" | "jump" | "redo" | "special";
 
 /** Whether a power-up can be used right now. */
 function canUse(p: Power): boolean {
   const { sim } = game;
   if (!sim || !game.powers[p]) return false;
   if (p === "redo") return !!game.lastShot && (game.phase === "rolling" || game.phase === "aim") && sim.state !== "warp" && sim.state !== "sunk";
+  if (p === "special" && game.ball.whileAiming && game.phase === "aim") return sim.state === "rest";
   return game.phase === "rolling" && sim.state === "moving";
 }
 
@@ -305,6 +312,13 @@ function usePower(p: Power): void {
   const sim = game.sim, view = game.view;
   if (p === "toot" && sim.toot()) { sfx.toot(); view.puff(); }
   else if (p === "jump" && sim.jump()) { sfx.boing(); view.ring(); }
+  else if (p === "special") {
+    const power = game.ball.power;
+    if (power === "slash" && sim.slash()) { sfx.slash(); view.slash(); toast("Slash! Cutting through anything in the way"); }
+    else if (power === "freeze" && sim.freeze()) { sfx.freeze(); view.freezeBurst(); toast("Freeze! Everything stops and the edges ice over"); }
+    else if (power === "magnet" && sim.magnet()) { sfx.magnet(); view.magnetOn(); toast("Magnet on: the cup is pulling the ball in"); }
+    else return;
+  }
   else if (p === "redo") {
     const shot = game.lastShot!;
     clearTimeout(game.outTimer);
@@ -322,7 +336,7 @@ function usePower(p: Power): void {
 }
 
 /** Keep the buttons in step with the game: lit when they'd do something, crossed out once used. */
-const powerKeys: Power[] = ["toot", "jump", "redo"];
+const powerKeys: Power[] = ["toot", "jump", "redo", "special"];
 let powerState = "";
 function updatePowerButtons(): void {
   const st = powerKeys.map((p) => `${game.powers[p] ? 1 : 0}${canUse(p) ? 1 : 0}`).join();
@@ -333,6 +347,7 @@ function updatePowerButtons(): void {
     b.disabled = !ok;
     b.classList.toggle("used", !game.powers[p]);
     b.classList.toggle("ready", ok && p !== "redo");
+    if (p === "special") b.classList.toggle("signature", true);
   }
 }
 for (const p of powerKeys) $(`pu-${p}`).addEventListener("click", () => { unlockAudio(); usePower(p); });
@@ -343,6 +358,8 @@ addEventListener("keydown", (e) => {
   if (k === "t") { usePower("toot"); return; }
   if (k === "j") { usePower("jump"); return; }
   if (k === "r" && !e.ctrlKey && !e.metaKey) { usePower("redo"); return; }
+  if (k === "e" || k === "q") { usePower("special"); return; }
+  if (game.phase === "title" && (k === "1" || k === "2" || k === "3")) { chooseBall(BALLS[+k - 1]); return; }
   if (k === "a" || k === "arrowleft") stage.goal.yaw += 0.25;
   else if (k === "d" || k === "arrowright") stage.goal.yaw -= 0.25;
   else if (k === "w" || k === "arrowup") zoom = clampZoom(zoom * 0.85);
@@ -437,7 +454,7 @@ function showCard(final: boolean): void {
 async function copyScore(): Promise<void> {
   const t = totals(game.scores, PARS);
   const holes = game.scores.map((s, i) => (game.aces[i] ? "⭐" : s! < PARS[i] ? "🟩" : s === PARS[i] ? "⬜" : "🟥")).join("");
-  const text = `Puttline ⛳ ${t.strokes} (${toPar(t.strokes, t.par)})\n${holes}\n${location.origin + location.pathname}`;
+  const text = `Puttline ⛳ ${t.strokes} (${toPar(t.strokes, t.par)}) as ${game.ball.name} ${game.ball.icon}\n${holes}\n${location.origin + location.pathname}`;
   try { await navigator.clipboard.writeText(text); toast("Score copied"); } catch { prompt("Copy your score:", text); }
 }
 
@@ -458,9 +475,46 @@ function saveBestTotal(): void {
   if (b.total == null || t < b.total) { b.total = t; writeBest(b); }
 }
 
+/* ---------- Choosing your ball ---------- */
+
+function readBall(): string | null { try { return localStorage.getItem("puttline.ball"); } catch { return null; } }
+
+/** The title's ball picker: one card per ball, with its picture, name and power. */
+function buildPicker(): void {
+  const host = $("balls");
+  host.innerHTML = "";
+  BALLS.forEach((b, i) => {
+    const card = document.createElement("button");
+    card.type = "button"; card.className = "ball-card"; card.dataset.ball = b.id;
+    card.setAttribute("role", "radio"); card.style.setProperty("--ball", b.colours.accent);
+    card.title = `${b.name}: ${b.powerText} (${i + 1})`;
+    const pic = ballPreview(b, 112); pic.className = "ball-pic"; pic.setAttribute("aria-hidden", "true");
+    card.append(pic);
+    card.insertAdjacentHTML("beforeend", `<b>${b.name}</b><span class="ball-power">${b.icon} ${b.powerName}</span><span class="ball-text">${b.powerText}</span>`);
+    card.addEventListener("click", () => { unlockAudio(); chooseBall(b); });
+    host.append(card);
+  });
+  chooseBall(game.ball, true);
+}
+
+function chooseBall(b: BallDef, quiet = false): void {
+  game.ball = b;
+  try { localStorage.setItem("puttline.ball", b.id); } catch { /* storage unavailable */ }
+  document.querySelectorAll<HTMLElement>(".ball-card").forEach((c) => { const on = c.dataset.ball === b.id; c.classList.toggle("on", on); c.setAttribute("aria-checked", String(on)); });
+  $("ball-chosen").textContent = `${b.name}: ${b.tagline}.`;
+  // the special power's button shows this ball's power
+  const btn = $("pu-special");
+  btn.querySelector(".ico")!.textContent = b.icon;
+  btn.querySelector(".lbl")!.textContent = b.powerName;
+  btn.title = `${b.powerName} (E): ${b.powerText}`;
+  btn.style.setProperty("--ball", b.colours.accent);
+  if (!quiet) sfx.bumper();
+}
+
 /* ---------- Start ---------- */
 
 function showTitle(): void {
+  buildPicker();
   const b = readBest();
   $("best").textContent = b.total != null ? `Your best round: ${b.total} (${toPar(b.total, PARS.reduce((a, c) => a + c, 0))})` : "";
   // the last hole behind the title, in space, slowly turning
@@ -483,11 +537,12 @@ if (new URLSearchParams(location.search).has("debug")) {
   (window as unknown as { puttline: object }).puttline = {
     shoot: (dx: number, dz: number, power: number) => { if (game.phase === "intro") game.introT = 2.6; if (game.phase === "aim" || game.phase === "intro") { game.phase = "aim"; shoot(new THREE.Vector2(dx, dz), power); } },
     state: () => ({ phase: game.phase, hole: game.index + 1, strokes: game.strokes, scores: game.scores, aces: game.aces, powers: game.powers, ball: game.sim?.ballPosition() }),
-    power: (p: Power) => usePower(p)
+    power: (p: Power) => usePower(p),
+    ball: (id: string) => chooseBall(ballById(id), true)
   };
 }
 // ?hole=5 jumps straight to a hole (handy for practice, and for testing)
 const jump = Number(new URLSearchParams(location.search).get("hole"));
-if (jump >= 1 && jump <= HOLES.length) { $("title").classList.add("hidden"); document.body.classList.remove("on-title"); game.scores = []; await physicsReady; loadHole(jump - 1); }
+if (jump >= 1 && jump <= HOLES.length) { buildPicker(); $("title").classList.add("hidden"); document.body.classList.remove("on-title"); game.scores = []; await physicsReady; loadHole(jump - 1); }
 else showTitle();
 requestAnimationFrame(frame);

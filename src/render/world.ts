@@ -4,6 +4,8 @@ import { BUMPER_RADIUS, CUP_RADIUS, GOLD_RADIUS, type Course, type MeshPart } fr
 import { CELL, type HoleDef } from "../course/parse.ts";
 import { BALL_RADIUS, type Sim } from "../game/physics.ts";
 import type { Theme } from "./themes.ts";
+import { BALLS, type BallDef } from "../game/balls.ts";
+import { makeBall, type BallLook } from "./balls.ts";
 
 /**
  * What you see: the course drawn from the same triangles the ball rolls on, in the hole's theme, plus the ball,
@@ -44,6 +46,26 @@ function hazardTexture(): THREE.Texture {
   hazardTex = new THREE.CanvasTexture(c);
   hazardTex.wrapS = THREE.RepeatWrapping; hazardTex.colorSpace = THREE.SRGBColorSpace;
   return hazardTex;
+}
+
+/** Ice for a frozen hole: pale, with cracks. */
+let iceTex: THREE.Texture | null = null;
+function iceTexture(): THREE.Texture {
+  if (iceTex) return iceTex;
+  const c = document.createElement("canvas"); c.width = c.height = 256;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#eaf9ff"; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = "rgba(120,190,230,.7)"; g.lineWidth = 1.2;
+  for (let i = 0; i < 26; i++) {
+    let x = Math.random() * 256, y = Math.random() * 256;
+    g.beginPath(); g.moveTo(x, y);
+    for (let k = 0; k < 5; k++) { x += (Math.random() - 0.5) * 60; y += (Math.random() - 0.5) * 60; g.lineTo(x, y); }
+    g.stroke();
+  }
+  for (let i = 0; i < 200; i++) { g.fillStyle = `rgba(255,255,255,${Math.random() * 0.5})`; g.fillRect(Math.random() * 256, Math.random() * 256, 2, 2); }
+  iceTex = new THREE.CanvasTexture(c);
+  iceTex.wrapS = iceTex.wrapT = THREE.RepeatWrapping; iceTex.repeat.set(4, 4); iceTex.colorSpace = THREE.SRGBColorSpace;
+  return iceTex;
 }
 
 function geometry(m: MeshPart, uv = false): THREE.BufferGeometry {
@@ -93,9 +115,19 @@ export class HoleView {
   private gold: THREE.Group | null = null;
   private goldSparks: THREE.InstancedMesh | null = null;
   private tmp = new THREE.Object3D();
+  private look: BallLook;
+  private ballDef: BallDef;
+  /** Things the samurai can cut, to flash when it does. */
+  private cuttable: { obj: THREE.Object3D; mat: THREE.MeshStandardMaterial; flash: number }[] = [];
+  private iceSheet: THREE.Mesh;
+  private iceLevel = 0;
+  private magnetRings: THREE.Mesh[] = [];
+  private magnetBeam: THREE.Mesh;
+  private vel = new THREE.Vector3();
+  private prevPos = new THREE.Vector3();
 
-  constructor(course: Course, def: HoleDef, theme: Theme) {
-    this.course = course; this.theme = theme;
+  constructor(course: Course, def: HoleDef, theme: Theme, ball: BallDef = BALLS[0]) {
+    this.course = course; this.theme = theme; this.ballDef = ball;
     const night = theme.bloom >= 0.8;
     const add = <T extends THREE.Object3D>(o: T, shadows: [boolean, boolean] = [true, true]) => { o.castShadow = shadows[0]; o.receiveShadow = shadows[1]; this.group.add(o); return o; };
 
@@ -113,7 +145,8 @@ export class HoleView {
     for (const s of course.solids) {
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i < s.points.length; i += 3) pts.push(new THREE.Vector3(s.points[i], s.points[i + 1], s.points[i + 2]));
-      add(new THREE.Mesh(new ConvexGeometry(pts), mats[s.kind]));
+      const solid = add(new THREE.Mesh(new ConvexGeometry(pts), s.kind === "rail" ? mats.rail : mats[s.kind].clone()));
+      if (s.kind !== "rail") this.cuttable.push({ obj: solid, mat: solid.material as THREE.MeshStandardMaterial, flash: 0 });
       // A glowing strip along the inner top edge of every rail (points 1 and 5: inner side, top, at each end)
       if (s.kind === "rail") add(bar(pts[1].clone().setY(pts[1].y + 0.01), pts[5].clone().setY(pts[5].y + 0.01), 0.05, trim), [false, false]);
     }
@@ -170,6 +203,7 @@ export class HoleView {
     for (const b of course.bumpers) {
       const mesh = new THREE.Mesh(new THREE.CylinderGeometry(BUMPER_RADIUS, BUMPER_RADIUS, 0.5, 32), std(theme.bumper, { roughness: 0.3, emissive: theme.bumper, emissiveIntensity: night ? 0.35 : 0.1 }));
       mesh.position.set(b.x, b.y + 0.25, b.z); add(mesh);
+      this.cuttable.push({ obj: mesh, mat: mesh.material as THREE.MeshStandardMaterial, flash: 0 });
       const cap = new THREE.Mesh(new THREE.TorusGeometry(BUMPER_RADIUS * 0.75, 0.04, 8, 32), neon(night ? theme.trim : "#ffffff", night ? 1.2 : 1));
       cap.rotation.x = Math.PI / 2; cap.position.set(b.x, b.y + 0.51, b.z); add(cap, [false, false]);
       this.bumpers.push({ mesh, flash: 0 });
@@ -185,6 +219,7 @@ export class HoleView {
       for (let i = 0; i < 4; i++) {
         const a = (i * Math.PI) / 2, half = w.bladeLength / 2;
         const blade = new THREE.Mesh(new THREE.BoxGeometry(0.26, w.bladeLength, 0.1), std(i % 2 ? theme.roof : theme.building, { roughness: 0.6 }));
+        this.cuttable.push({ obj: blade, mat: blade.material as THREE.MeshStandardMaterial, flash: 0 });
         blade.position.set(-Math.sin(a) * half, Math.cos(a) * half, 0); blade.rotation.z = a; blade.castShadow = true;
         // lights along each blade
         const strip = new THREE.Mesh(new THREE.BoxGeometry(0.05, w.bladeLength * 0.85, 0.02), neon(theme.trim, 1.2));
@@ -200,17 +235,31 @@ export class HoleView {
       // warning lights on top
       for (const x of [-0.6, 0.6]) { const l = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), neon("#ff1744", 2.5)); l.position.set(alongX ? x : 0, 0.3, alongX ? 0 : x); mesh.add(l); }
       add(mesh); this.sliders.push(mesh);
+      this.cuttable.push({ obj: mesh, mat: mesh.material as THREE.MeshStandardMaterial, flash: 0 });
     }
 
-    this.ball = new THREE.Mesh(new THREE.SphereGeometry(BALL_RADIUS, 32, 20), std("#ffffff", { roughness: 0.35, emissive: "#ffffff", emissiveIntensity: night ? 0.12 : 0 }));
-    this.ball.castShadow = true;
-    // a stripe so you can see it roll
-    const stripe = new THREE.Mesh(new THREE.TorusGeometry(BALL_RADIUS * 1.001, 0.012, 6, 40), new THREE.MeshBasicMaterial({ color: "#ff7043" }));
-    this.ball.add(stripe);
-    this.group.add(this.ball);
+    // The ball you chose: its painted sphere rolls, its topper (hat, crown or antenna) stays upright
+    this.look = makeBall(ball, night);
+    this.ball = this.look.mesh;
+    this.group.add(this.ball, this.look.topper);
 
-    // The trail: a glowing ribbon behind the rolling ball
-    this.trail = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: new THREE.Color(theme.accent).multiplyScalar(1.5), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, vertexColors: true }));
+    // Frost: a sheet of ice over the water, shown while the hole is frozen (just under the green, so it only shows over water)
+    const b = course.bounds;
+    this.iceSheet = new THREE.Mesh(new THREE.PlaneGeometry(b.x1 - b.x0 + 1.2, b.z1 - b.z0 + 1.2), new THREE.MeshStandardMaterial({ map: iceTexture(), color: "#dff6ff", roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0, emissive: "#5fd3ff", emissiveIntensity: 0.25, depthWrite: false }));
+    this.iceSheet.rotation.x = -Math.PI / 2; this.iceSheet.position.set((b.x0 + b.x1) / 2, -0.012, (b.z0 + b.z1) / 2);
+    this.iceSheet.visible = false; this.iceSheet.receiveShadow = true;
+    this.group.add(this.iceSheet);
+    // Mecha: rings closing in on the cup, and a beam from the ball to it, while the magnet is on
+    for (let i = 0; i < 3; i++) {
+      const r = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 40), neon(ball.colours.accent, 2, 0.8));
+      r.rotation.x = -Math.PI / 2; r.position.set(course.hole[0], course.hole[1] + 0.02, course.hole[2]); r.visible = false;
+      this.group.add(r); this.magnetRings.push(r);
+    }
+    this.magnetBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 1, 6, 1, true).translate(0, 0.5, 0).rotateX(Math.PI / 2), neon(ball.colours.accent, 2.2, 0.75));
+    this.magnetBeam.visible = false; this.group.add(this.magnetBeam);
+
+    // The trail: a glowing ribbon behind the rolling ball, in the ball's colour
+    this.trail = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: new THREE.Color(ball.colours.trail).multiplyScalar(1.5), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false, vertexColors: true }));
     this.trail.frustumCulled = false;
     this.group.add(this.trail);
 
@@ -261,6 +310,12 @@ export class HoleView {
     this.ball.position.set(p[0], p[1], p[2]);
     this.ball.quaternion.set(q.x, q.y, q.z, q.w);
     this.ball.visible = sim.state !== "warp";
+    // velocity from the motion between frames (smoothed), for the topper and the effects
+    if (dt > 0) this.vel.lerp(new THREE.Vector3(p[0], p[1], p[2]).sub(this.prevPos).divideScalar(dt), Math.min(1, dt * 12));
+    this.prevPos.set(p[0], p[1], p[2]);
+    const powerOn = sim.slashT > 0 || sim.freezeT > 0 || sim.magnetT > 0;
+    this.look.update(dt, t, this.vel, powerOn);
+    this.powerEffects(sim, dt, t);
 
     let bi = 0, si = 0;
     for (const m of sim.moverStates()) {
@@ -345,6 +400,56 @@ export class HoleView {
     (this.aimShaft.material as THREE.MeshBasicMaterial).color.copy(c);
   }
 
+  /** What the special powers look like while they're running. */
+  private powerEffects(sim: Sim, dt: number, t: number): void {
+    // frost: the ice sheet fades in and out; the windmill and moving blocks frost over
+    this.iceLevel += ((sim.freezeT > 0 ? 1 : 0) - this.iceLevel) * Math.min(1, dt * 6);
+    const ice = this.iceSheet.material as THREE.MeshStandardMaterial;
+    ice.opacity = this.iceLevel * 0.85; this.iceSheet.visible = this.iceLevel > 0.01;
+    // mecha: rings shrink onto the cup, a beam joins ball and cup
+    const pulling = sim.magnetT > 0 && sim.state === "moving";
+    this.magnetRings.forEach((r, i) => {
+      r.visible = pulling;
+      const k = 1 - ((t * 1.2 + i / 3) % 1);
+      r.scale.setScalar(0.4 + k * 3.2); (r.material as THREE.MeshBasicMaterial).opacity = (1 - k) * 0.9;
+    });
+    const [hx, hy, hz] = this.course.hole, bp = this.ball.position, d = Math.hypot(bp.x - hx, bp.z - hz);
+    this.magnetBeam.visible = pulling && d < 5 && d > 0.2;
+    if (this.magnetBeam.visible) {
+      this.magnetBeam.position.copy(bp); this.magnetBeam.lookAt(hx, hy + 0.05, hz);
+      this.magnetBeam.scale.set(1 + Math.sin(t * 40) * 0.4, 1 + Math.sin(t * 40) * 0.4, bp.distanceTo(new THREE.Vector3(hx, hy + 0.05, hz)));
+    }
+    // samurai: the ball glows hot while the blade is out; whatever it cut flashes
+    const ballMat = this.ball.material as THREE.MeshStandardMaterial;
+    if (this.ballDef.id === "samurai") ballMat.emissiveIntensity = sim.slashT > 0 ? 0.6 + Math.sin(t * 30) * 0.2 : this.theme.bloom >= 0.8 ? 0.12 : 0;
+    for (const c of this.cuttable) {
+      const frozen = this.iceLevel > 0.02 && (this.blades.some((g) => g.children.includes(c.obj)) || this.sliders.includes(c.obj as THREE.Mesh));
+      c.flash = Math.max(0, c.flash - dt * 3);
+      if (c.flash > 0) { c.mat.emissive.set("#ffffff"); c.mat.emissiveIntensity = c.flash * 1.4; }
+      else if (frozen) { c.mat.emissive.set("#7fdcff"); c.mat.emissiveIntensity = this.iceLevel * 0.6; }
+      else if (c.mat.userData.base === undefined) { c.mat.userData.base = [c.mat.emissive.getHex(), c.mat.emissiveIntensity]; }
+      else { c.mat.emissive.setHex(c.mat.userData.base[0]); c.mat.emissiveIntensity = c.mat.userData.base[1]; }
+    }
+  }
+
+  /** Samurai: the draw (a crescent slash ahead of the ball). */
+  slash(): void { this.effects.slash(this.ball.position, this.vel, this.ballDef.colours.accent); }
+  /** Samurai: it went through something. An X of light where it cut, sparks, and the thing flashes. */
+  cutAt(at: [number, number, number]): void {
+    const p = new THREE.Vector3(...at);
+    this.effects.cross(p, this.vel);
+    this.confetti.burst(p, ["#ffffff", "#ffd54f", "#ff4d5e"], 0.45);
+    let best: (typeof this.cuttable)[number] | null = null, bd = Infinity;
+    for (const c of this.cuttable) { const d = c.obj.getWorldPosition(new THREE.Vector3()).distanceTo(p); if (d < bd) { bd = d; best = c; } }
+    if (best && bd < 2.2) best.flash = 1;
+  }
+  /** Frost: a ring of frost spreads from the ball, and snow bursts up. */
+  freezeBurst(): void { this.effects.frost(this.ball.position); this.confetti.burst(this.ball.position.clone(), ["#ffffff", "#e6fbff", "#bfefff", "#8fe3ff"], 0.6); }
+  /** Frost: the ice cracks away. */
+  thaw(): void { this.effects.frost(this.ball.position, true); }
+  /** Mecha: the magnet switches on. */
+  magnetOn(): void { this.effects.ring(this.ball.position, this.ballDef.colours.accent); this.effects.ring(new THREE.Vector3(...this.course.hole), this.ballDef.colours.accent); }
+
   /** Power-up effects: a puff of fart cloud behind the ball, and a ring when it jumps. */
   puff(): void { this.effects.puff(this.ball.position); }
   ring(): void { this.effects.ring(this.ball.position); }
@@ -420,7 +525,7 @@ class Confetti {
 class Effects {
   readonly group = new THREE.Group();
   private puffs: { mesh: THREE.Mesh; v: THREE.Vector3; life: number; size: number }[] = [];
-  private rings: { mesh: THREE.Mesh; life: number }[] = [];
+  private rings: { mesh: THREE.Mesh; life: number; grow: number }[] = [];
   private puffGeo = new THREE.IcosahedronGeometry(0.16, 1);
   private ringGeo = new THREE.RingGeometry(0.2, 0.28, 40);
 
@@ -433,10 +538,35 @@ class Effects {
       this.puffs.push({ mesh: m, v: new THREE.Vector3((Math.random() - 0.5) * 0.8, 0.4 + Math.random() * 0.6, (Math.random() - 0.5) * 0.8), life: 1.2 + Math.random() * 0.5, size: 0.6 + Math.random() * 0.8 });
     }
   }
-  ring(at: THREE.Vector3): void {
-    const m = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color("#80d8ff").multiplyScalar(1.5), transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, toneMapped: false }));
+  /** Short glowing arcs: the samurai's draw and cuts. */
+  private arcs: { mesh: THREE.Mesh; life: number; max: number; grow: number }[] = [];
+  private arc(at: THREE.Vector3, yaw: number, tilt: number, colour: string, size: number, life: number): void {
+    const m = new THREE.Mesh(new THREE.RingGeometry(size * 0.82, size, 40, 1, -Math.PI * 0.45, Math.PI * 0.9),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(colour).multiplyScalar(2.2), transparent: true, opacity: 1, side: THREE.DoubleSide, depthWrite: false, toneMapped: false, blending: THREE.AdditiveBlending }));
+    m.position.copy(at); m.rotation.set(0, yaw, 0); m.rotateX(tilt);
+    this.group.add(m); this.arcs.push({ mesh: m, life, max: life, grow: 1.6 });
+  }
+  slash(at: THREE.Vector3, vel: THREE.Vector3, colour: string): void {
+    const yaw = Math.atan2(vel.x, vel.z);
+    this.arc(at.clone().add(new THREE.Vector3(0, 0.15, 0)), yaw, Math.PI / 2 - 0.5, "#ffffff", 0.7, 0.35);
+    this.arc(at.clone().add(new THREE.Vector3(0, 0.15, 0)), yaw, Math.PI / 2 - 0.3, colour, 0.85, 0.45);
+  }
+  cross(at: THREE.Vector3, vel: THREE.Vector3): void {
+    const yaw = Math.atan2(vel.x, vel.z) + Math.PI / 2;
+    this.arc(at.clone().add(new THREE.Vector3(0, 0.25, 0)), yaw, 0.8, "#ffffff", 0.55, 0.4);
+    this.arc(at.clone().add(new THREE.Vector3(0, 0.25, 0)), yaw, -0.8, "#ff4d5e", 0.55, 0.4);
+  }
+  frost(at: THREE.Vector3, cracking = false): void {
+    for (let i = 0; i < (cracking ? 1 : 2); i++) {
+      const m = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(cracking ? "#ffffff" : "#8fe3ff").multiplyScalar(1.6), transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, toneMapped: false }));
+      m.rotation.x = -Math.PI / 2; m.position.copy(at).setY(at.y - BALL_RADIUS + 0.03);
+      this.group.add(m); this.rings.push({ mesh: m, life: 0.6 + i * 0.25, grow: cracking ? 14 : 22 });
+    }
+  }
+  ring(at: THREE.Vector3, colour = "#80d8ff"): void {
+    const m = new THREE.Mesh(this.ringGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(colour).multiplyScalar(1.5), transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false, toneMapped: false }));
     m.rotation.x = -Math.PI / 2; m.position.copy(at).setY(at.y - BALL_RADIUS + 0.02);
-    this.group.add(m); this.rings.push({ mesh: m, life: 0.6 });
+    this.group.add(m); this.rings.push({ mesh: m, life: 0.6, grow: 9 });
   }
   update(dt: number): void {
     this.puffs = this.puffs.filter((p) => {
@@ -447,9 +577,17 @@ class Effects {
       if (p.life > 0) return true;
       this.group.remove(p.mesh); (p.mesh.material as THREE.Material).dispose(); return false;
     });
+    this.arcs = this.arcs.filter((a) => {
+      a.life -= dt;
+      const k = 1 - a.life / a.max;
+      a.mesh.scale.setScalar(1 + k * a.grow * 0.4);
+      (a.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, a.life / a.max);
+      if (a.life > 0) return true;
+      this.group.remove(a.mesh); a.mesh.geometry.dispose(); (a.mesh.material as THREE.Material).dispose(); return false;
+    });
     this.rings = this.rings.filter((r) => {
       r.life -= dt;
-      r.mesh.scale.setScalar(1 + (0.6 - r.life) * 9);
+      r.mesh.scale.setScalar(1 + Math.max(0, 0.6 - r.life) * r.grow);
       (r.mesh.material as THREE.MeshBasicMaterial).opacity = Math.max(0, r.life * 1.5);
       if (r.life > 0) return true;
       this.group.remove(r.mesh); (r.mesh.material as THREE.Material).dispose(); return false;

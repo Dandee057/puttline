@@ -9,6 +9,8 @@ import { isMuted, setMuted, sfx, suspendAudio, unlockAudio } from "./audio.ts";
 import { Stage, yawFacing } from "./render/stage.ts";
 import { HoleView } from "./render/world.ts";
 import { themeFor } from "./render/themes.ts";
+import { BALLS, ballById, type BallDef } from "./game/balls.ts";
+import { ballPreview } from "./render/balls.ts";
 
 /**
  * Puttline as a console cartridge: the same course, physics and scenery as the web version, played with a
@@ -20,13 +22,14 @@ import { themeFor } from "./render/themes.ts";
  * onto the console's 2D canvas. This file is built as one script (`npm run build:cartridge`) that a tiny loader,
  * cartridge/puttline.js, fetches only when the cartridge goes in.
  *
+ *   title: ◀ ▶ pick a ball (Ronin, Frostbite or Mag-9)
  *   ◀ ▶ aim   ▲ ▼ power   A putt   B overview
- *   while the ball rolls: A jump · B toot · START redo (each once per hole)
+ *   while the ball rolls: A jump · B toot · ▲ or ▼ the ball's power · START redo (each once per hole)
  */
 
 type Phase = "title" | "intro" | "aim" | "rolling" | "holed" | "done";
 type Key = "left" | "right" | "up" | "down" | "jump" | "shoot";
-type Power = "toot" | "jump" | "redo";
+type Power = "toot" | "jump" | "redo" | "special";
 
 /** The engine API the cartridge sites expect (see gba.js on the website, cartridge.ts in Three Lab). */
 export interface CartApi {
@@ -50,6 +53,8 @@ export interface CartApi {
 
 const FONT = '"Press Start 2P", ui-monospace, monospace';
 const C = { white: "#ffffff", gold: "#ffd54f", green: "#7dff9a", red: "#ff6b6b", cyan: "#6ee7ff", grey: "#8b93a7", ink: "#0b1020" };
+/** The ball's power in a few words, for the title screen (the pixel font is wide). */
+const POWER_SHORT = { slash: "CUTS THROUGH THINGS", freeze: "STOPS THE COURSE", magnet: "PULLS IT TO THE CUP" } as const;
 const PARS = HOLES.map((h) => h.par);
 const COURSE_PAR = PARS.reduce((a, b) => a + b, 0);
 const ZOOM = 9;
@@ -79,7 +84,8 @@ export function attach(api: CartApi): void {
     index: 0,
     scores: [] as (number | undefined)[],
     aces: [] as boolean[],
-    powers: { toot: true, jump: true, redo: true },
+    powers: { toot: true, jump: true, redo: true, special: true },
+    ball: ballById(readBall()) as BallDef,
     lastShot: null as { from: [number, number, number]; strokes: number } | null,
     strokes: 0,
     def: HOLES[0] as HoleDef,
@@ -119,7 +125,7 @@ export function attach(api: CartApi): void {
     game.phase = "title"; api.state = "menu";
     // the last hole, in space, slowly turning behind the title
     const def = HOLES[HOLES.length - 1], theme = themeFor(def.theme), course = buildHole(def);
-    titleView = new HoleView(course, def, theme);
+    titleView = new HoleView(course, def, theme, game.ball);
     titleView.ball.visible = false;
     stage.scene.add(titleView.group);
     stage.setTheme(theme, course.bounds);
@@ -140,11 +146,11 @@ export function attach(api: CartApi): void {
     if (!stage) return;
     clearScene();
     game.index = i; game.def = HOLES[i]; game.strokes = 0;
-    game.powers = { toot: true, jump: true, redo: true }; game.lastShot = null; game.outT = 0;
+    game.powers = { toot: true, jump: true, redo: true, special: true }; game.lastShot = null; game.outT = 0;
     game.course = buildHole(game.def);
     game.sim = new Sim(game.course, game.def);
     const theme = themeFor(game.def.theme);
-    game.view = new HoleView(game.course, game.def, theme);
+    game.view = new HoleView(game.course, game.def, theme, game.ball);
     game.field = distanceField(game.course);
     stage.scene.add(game.view.group);
     stage.setTheme(theme, game.course.bounds);
@@ -208,6 +214,7 @@ export function attach(api: CartApi): void {
     const { sim } = game;
     if (!sim || !game.powers[p]) return false;
     if (p === "redo") return !!game.lastShot && (game.phase === "rolling" || game.phase === "aim") && sim.state !== "warp" && sim.state !== "sunk";
+    // the cartridge has no spare button while aiming, so every ball's power is used while it rolls
     return game.phase === "rolling" && sim.state === "moving";
   }
 
@@ -216,7 +223,13 @@ export function attach(api: CartApi): void {
     const sim = game.sim, view = game.view;
     if (p === "toot" && sim.toot()) { sfx.toot(); view.puff(); note(["TOOT!"], 1.2); }
     else if (p === "jump" && sim.jump()) { sfx.boing(); view.ring(); note(["BOING!"], 1.2); }
-    else if (p === "redo") {
+    else if (p === "special") {
+      const b = game.ball;
+      if (b.power === "slash" && sim.slash()) { sfx.slash(); view.slash(); note(["SLASH!"], 1.2); }
+      else if (b.power === "freeze" && sim.freeze()) { sfx.freeze(); view.freezeBurst(); note(["FREEZE!", "EVERYTHING STOPS"], 1.6); }
+      else if (b.power === "magnet" && sim.magnet()) { sfx.magnet(); view.magnetOn(); note(["MAGNET ON!"], 1.4); }
+      else return;
+    } else if (p === "redo") {
       const shot = game.lastShot!;
       game.outT = 0;
       sim.place(shot.from);
@@ -238,6 +251,8 @@ export function attach(api: CartApi): void {
         else sfx.wall(e.speed);
       } else if (e.type === "warp") { sfx.warp(); view?.sparkle("gold"); }
       else if (e.type === "warped") view?.sparkle("cup");
+      else if (e.type === "cut") { sfx.cut(); view?.cutAt(e.at); }
+      else if (e.type === "thaw") { sfx.thaw(); view?.thaw(); }
       else if (e.type === "sunk" && (game.phase === "rolling" || game.phase === "aim")) finishHole(game.strokes);
       else if (e.type === "out" && game.phase === "rolling" && game.outT <= 0) {
         sfx.splash();
@@ -384,8 +399,8 @@ export function attach(api: CartApi): void {
   }
 
   function drawPowers(g: CanvasRenderingContext2D, W: number, H: number, k: number, s: number, pad: number, small: boolean): void {
-    const items: [Power, string, string][] = [["jump", "JUMP", "A"], ["toot", "TOOT", "B"], ["redo", "REDO", small ? "ST" : "START"]];
-    const fs = Math.max(8, Math.round(6 * k)), cw = small ? fs * 2.6 : fs * 5.6, ch = fs * 2.2, gap = Math.max(2, Math.round(3 * k));
+    const items: [Power, string, string][] = [["jump", "JUMP", "A"], ["toot", "TOOT", "B"], [ "special", game.ball.powerName.toUpperCase(), "UP"], ["redo", "REDO", small ? "ST" : "START"]];
+    const fs = Math.max(8, Math.round(6 * k)), cw = small ? fs * 2.6 : fs * 6.4, ch = fs * 2.2, gap = Math.max(2, Math.round(3 * k));
     let x = W - pad - items.length * (cw + gap) + gap;
     const y = H - s - pad * 3 - ch;
     for (const [p, label, key] of items) {
@@ -405,7 +420,31 @@ export function attach(api: CartApi): void {
     text(g, W < 300 ? "MINI GOLF" : "9 HOLES OF MINI GOLF", W / 2, y + ts * 1.5, s, C.white, "center");
     const best = readBest();
     if (best.total != null) text(g, `BEST ${best.total} (${toPar(best.total, COURSE_PAR)})`, W / 2, y + ts * 1.5 + s * 2, s, C.cyan, "center");
-    if (pendingStart || !physicsReady) text(g, "LOADING...", W / 2, H * 0.62, s, C.white, "center");
+    // the ball picker: the chosen ball, its name and power, with arrows either side
+    const under = y + ts * 1.5 + s * (best.total != null ? 3.2 : 1.4);
+    const b = game.ball, size = Math.round(Math.min(H * 0.3, W * 0.2)), cy = Math.max(H * 0.5, under + size / 2);
+    g.drawImage(preview(b), W / 2 - size / 2, cy - size / 2, size, size);
+    const ax = size * 0.5 + s * 2, blink = Math.floor(game.time * 2.5) % 2 === 0;
+    if (blink) { arrow(g, W / 2 - ax, cy, s, -1); arrow(g, W / 2 + ax, cy, s, 1); }
+    let ty = cy + size / 2 + s * 0.4;
+    text(g, b.name.toUpperCase(), W / 2, ty, s, b.colours.accent, "center");
+    ty += s * 1.6;
+    const pw = `${b.powerName.toUpperCase()}: ${POWER_SHORT[b.power]}`;
+    text(g, pw, W / 2, ty, fit(g, pw, Math.max(8, Math.round(s * 0.8)), W * 0.94), C.white, "center");
+    if (pendingStart || !physicsReady) text(g, "LOADING...", W / 2, ty + s * 1.8, s, C.white, "center");
+  }
+
+  const previews = new Map<string, HTMLCanvasElement>();
+  const preview = (b: BallDef) => { let c = previews.get(b.id); if (!c) { c = ballPreview(b, 128); previews.set(b.id, c); } return c; };
+  function arrow(g: CanvasRenderingContext2D, x: number, y: number, s: number, dir: number): void {
+    g.fillStyle = C.gold; g.beginPath(); g.moveTo(x + dir * s * 0.6, y); g.lineTo(x - dir * s * 0.4, y - s * 0.7); g.lineTo(x - dir * s * 0.4, y + s * 0.7); g.closePath(); g.fill();
+  }
+
+  function pickBall(step: number): void {
+    const i = BALLS.findIndex((b) => b.id === game.ball.id);
+    game.ball = BALLS[(i + step + BALLS.length) % BALLS.length];
+    try { localStorage.setItem("puttline.ball", game.ball.id); } catch { /* storage unavailable */ }
+    sfx.wall(2);
   }
 
   function drawCard(g: CanvasRenderingContext2D, W: number, H: number, k: number, s: number): void {
@@ -446,6 +485,8 @@ export function attach(api: CartApi): void {
 
   /* ---------- Personal bests (shared with the web version when on the same site) ---------- */
 
+  function readBall(): string | null { try { return localStorage.getItem("puttline.ball"); } catch { return null; } }
+
   interface Best { holes: (number | null)[]; total: number | null }
   function readBest(): Best {
     try { const b = JSON.parse(localStorage.getItem("puttline.best") ?? "null"); if (b && Array.isArray(b.holes)) return b; } catch { /* none */ }
@@ -480,6 +521,8 @@ export function attach(api: CartApi): void {
     const fresh = !held.has(k);
     held.add(k);
     if (!fresh) return;
+    if (game.phase === "title" && (k === "left" || k === "right")) { pickBall(k === "left" ? -1 : 1); return; }
+    if (game.phase === "rolling" && (k === "up" || k === "down")) { usePower("special"); return; }
     const a = k === "jump", b = k === "shoot";
     if (!a && !b) return;
     switch (game.phase) {
@@ -507,8 +550,10 @@ export function attach(api: CartApi): void {
     pause: (p: boolean) => { paused = !!p; if (p) held.clear(); },
     stop: () => { paused = true; held.clear(); suspendAudio(); },
     // for automated tests: play an exact shot, and read the state
-    debug: () => ({ phase: game.phase, hole: game.index + 1, strokes: game.strokes, scores: game.scores, aces: game.aces, powers: game.powers, aim: [aim.dir.x, aim.dir.y, aim.power], ball: game.sim?.ballPosition(), ready: physicsReady }),
+    debug: () => ({ ballId: game.ball.id, phase: game.phase, hole: game.index + 1, strokes: game.strokes, scores: game.scores, aces: game.aces, powers: game.powers, aim: [aim.dir.x, aim.dir.y, aim.power], ball: game.sim?.ballPosition(), ready: physicsReady }),
     debugShot: (dx: number, dz: number, power: number) => { if (game.phase === "intro") { game.introT = 2.6; game.phase = "aim"; } aim.dir.set(dx, dz).normalize(); aim.power = power; shoot(); },
+    debugBall: (id: string) => { game.ball = ballById(id); },
+    debugPower: () => usePower("special"),
     debugHole: (i: number) => { if (physicsReady) { game.scores = []; game.aces = []; loadHole(i - 1); } }
   });
 }

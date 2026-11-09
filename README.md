@@ -11,6 +11,12 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 
 ## Playing
 
+- **Pick your ball.** Three golf balls, each with its own look and one special power (E), usable once per hole:
+  - ⚔️ **Ronin**, a lacquered samurai ball in a headband, **Slashes**: a dash that cuts straight through blocks, bumpers, moving blocks and the windmill's blades.
+  - ❄️ **Frostbite**, a crystal ball with an ice crown, **Freezes** the hole for five seconds: the windmill and moving blocks stop, and the water or lava ices over so the ball can roll across it. Frost is the only power you can use before the putt. When the ice melts, a ball still out on it drops in.
+  - 🧲 **Mag-9**, a chrome robot ball with a blinking aerial, switches on the cup's **Magnet**: a rolling ball nearby is pulled in and steered onto the cup.
+
+  The powers fill each other's gaps: Ronin handles things in the way, Frostbite handles timing and water, Mag-9 handles the finish. All three roll exactly the same, so every hole's proof still holds.
 - **Putt:** drag anywhere and pull back like a slingshot. The further you pull, the harder the putt. Let go to hit.
 - **Look around:** ⟲ ⟳ or A / D, right-drag, or two fingers. Scroll or pinch to zoom. ◎ or O shows the whole hole.
 - **Rules:** a ball off the course costs a stroke and goes back where it was. After four over par the ball is picked up, so nobody gets stuck.
@@ -58,9 +64,15 @@ Built with **Three.js**, the **Rapier** physics engine (WebAssembly) and **TypeS
 
 **Small first download.** The physics engine is most of the download, so it's loaded in its own chunk while the title screen shows. The title needs about 160 KB.
 
+**Three balls, one physics.** The balls ([`src/game/balls.ts`](src/game/balls.ts)) differ only in looks and power. Their skins are painted on canvases at load time, with no image files ([`src/render/balls.ts`](src/render/balls.ts)), and each wears a "topper" (headband and ribbons, ice crown, aerial and visor) that stays upright and faces the way the ball rolls. The powers live in the simulation, so they're tested like everything else:
+
+- **Slash** switches the ball's Rapier collision groups so it passes through obstacles (but never the rails), and finds what it cut with a shape query each step;
+- **Freeze** stops the clock that drives the windmill and moving blocks, and adds a temporary sheet of ice as a collider over the water;
+- **Magnet** steers a ball near the cup towards it, damps its sideways speed and caps its speed at the rim so it can't skip over.
+
 **Sound without files.** Putts, rail knocks, bumpers, the cup's rattle and the splash are synthesised with the Web Audio API ([`src/audio.ts`](src/audio.ts)).
 
-**Also a console cartridge.** The same game plays on the handheld consoles on [dandeegames.com](https://dandeegames.com/) and on an arcade cabinet in [Three Lab](https://github.com/dandee057/dandee-three-lab), with a d-pad and two buttons instead of the mouse: ◀ ▶ aim, ▲ ▼ power, A putt, B overview, and while the ball rolls A jump, B toot, START redo. [`src/cartridge.ts`](src/cartridge.ts) speaks those sites' small cartridge API (`update`, `drawScreen`, `hold`, `press`…), renders the scene off-screen at the console screen's exact size and draws the HUD on top. `npm run build:cartridge` builds it as one script, with three.js and Rapier inside, plus [`cartridge/puttline.js`](cartridge/puttline.js), a 4 kB loader the sites include, which only fetches the game when the cartridge goes in.
+**Also a console cartridge.** The same game plays on the handheld consoles on [dandeegames.com](https://dandeegames.com/) and on an arcade cabinet in [Three Lab](https://github.com/dandee057/dandee-three-lab), with a d-pad and two buttons instead of the mouse: ◀ ▶ pick a ball on the title, then ◀ ▶ aim, ▲ ▼ power, A putt, B overview, and while the ball rolls A jump, B toot, ▲ or ▼ the ball's power, START redo. [`src/cartridge.ts`](src/cartridge.ts) speaks those sites' small cartridge API (`update`, `drawScreen`, `hold`, `press`…), renders the scene off-screen at the console screen's exact size and draws the HUD on top. `npm run build:cartridge` builds it as one script, with three.js and Rapier inside, plus [`cartridge/puttline.js`](cartridge/puttline.js), a 4 kB loader the sites include, which only fetches the game when the cartridge goes in.
 
 ## Running it
 
@@ -86,17 +98,19 @@ src/
   course/parse.ts      reading a hole's text map
   course/build.ts      map → green, cup, steps, rails, blocks, windmill
   course/holes.ts      the nine holes
-  game/physics.ts      the ball and everything it hits (Rapier)
+  game/physics.ts      the ball and everything it hits (Rapier), and the balls' powers
+  game/balls.ts        the three balls: name, power, colours
   game/rules.ts        score names, stroke limit, totals
   game/route.ts        walking distance to the cup, and which way to face (camera, hole checker)
   game/solver.ts       the search that proves each hole can be finished
   render/stage.ts      renderer, bloom, sky, water or lava, particles, camera rig
   render/world.ts      a hole drawn in Three.js: ball, waving flag, golden hole, neon trim, windmill, trail, confetti
   render/themes.ts     the nine arenas: sky, light, colours, scenery, particles
+  render/balls.ts      the balls' painted skins, toppers and title-screen pictures
   audio.ts             synthesised sound effects
 cartridge/puttline.js  the cartridge loader, and its cover
 scripts/check-holes.ts finds and saves a way round every hole
-tests/                 course building, physics, rules, and a replay of every hole
+tests/                 course building, physics, rules, the balls' powers, and a replay of every hole
 ```
 
 ## Licence

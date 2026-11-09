@@ -35,6 +35,7 @@
       <button type="button" id="pu-toot" title="Toot (T): a push for a rolling ball"><span class="ico" aria-hidden="true">💨</span><span class="lbl">Toot</span><kbd>T</kbd></button>
       <button type="button" id="pu-jump" title="Jump (J): pop a rolling ball into the air"><span class="ico" aria-hidden="true">🦘</span><span class="lbl">Jump</span><kbd>J</kbd></button>
       <button type="button" id="pu-redo" title="Redo (R): take your last shot again"><span class="ico" aria-hidden="true">↺</span><span class="lbl">Redo</span><kbd>R</kbd></button>
+      <button type="button" id="pu-special" class="special" title="Your ball's power (E)"><span class="ico" aria-hidden="true">⚔️</span><span class="lbl">Slash</span><kbd>E</kbd></button>
     </nav>
 
     <div class="banner" id="banner" role="status"><b></b><span></span></div>
@@ -45,6 +46,9 @@
         <p class="kicker">Nine holes · real ball physics</p>
         <h1>Puttline</h1>
         <p class="lede">Mini golf in your browser. Bank it off the rails, time the windmill, don't fall off the bridge.</p>
+        <p class="pick-label">Choose your ball</p>
+        <div class="balls" id="balls" role="radiogroup" aria-label="Choose your ball"></div>
+        <p class="ball-chosen" id="ball-chosen"></p>
         <button type="button" class="play" id="play">Play</button>
         <p class="best" id="best"></p>
         <ul class="how">
@@ -52,6 +56,7 @@
           <li><b>Look around</b> ⟲ ⟳ or A / D, right-drag, or two fingers. Scroll or pinch to zoom.</li>
           <li><b>Whole hole</b> ◎ or O.</li>
           <li><b>Power-ups</b> once per hole: 💨 Toot gives a rolling ball a push, 🦘 Jump pops it in the air, ↺ Redo takes your last shot again.</li>
+          <li><b>Your ball's power</b> (E), once per hole: ⚔️ Ronin slashes through obstacles, ❄️ Frostbite freezes the hole, 🧲 Mag-9 magnetises the cup.</li>
         </ul>
       </div>
     </section>

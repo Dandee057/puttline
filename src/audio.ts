@@ -97,5 +97,13 @@ export const sfx = {
   boing() { tone(180, 0.18, 0.3, "sine", 720); tone(720, 0.25, 0.12, "triangle", 360, 0.16); },
   rewind() { tone(1400, 0.35, 0.18, "triangle", 220); noise(0.3, 0.06, "highpass", 3000); },
   splash() { noise(0.6, 0.5, "lowpass", 900); tone(300, 0.3, 0.1, "sine", 90); },
-  fanfare() { [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => tone(f, 0.35, 0.16, "triangle", undefined, i * 0.1)); }
+  fanfare() { [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => tone(f, 0.35, 0.16, "triangle", undefined, i * 0.1)); },
+  /** The three balls' powers. Samurai: the blade drawn (a metallic shing), and each cut (a swish and a clack). */
+  slash() { noise(0.25, 0.3, "highpass", 5000); tone(2400, 0.4, 0.12, "triangle", 3200); tone(4800, 0.3, 0.05, "sine", undefined, 0.02); },
+  cut() { noise(0.12, 0.35, "bandpass", 3500); tone(900, 0.08, 0.2, "square", 300); },
+  /** Frost: a sparkling crackle as everything freezes, and a crunch when it thaws. */
+  freeze() { [1568, 2093, 2637, 3136].forEach((f, i) => tone(f, 0.4, 0.08, "sine", f * 0.8, i * 0.05)); noise(0.6, 0.12, "highpass", 6000); },
+  thaw() { noise(0.35, 0.25, "bandpass", 1200); tone(400, 0.2, 0.08, "triangle", 160); },
+  /** Mecha: the magnet powering up. */
+  magnet() { tone(120, 0.6, 0.25, "sawtooth", 480); tone(240, 0.6, 0.08, "square", 960, 0.05); }
 };

@@ -109,3 +109,24 @@ body.on-title .hud, body.on-title .controls, body.on-title .hint, body.on-title 
   .powerups kbd { display: none; }
   .hint, .meter { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 112px); }
 }
+
+/* Choosing your ball */
+.pick-label { margin: 4px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.balls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px; }
+.ball-card { --ball: #2e7d32; display: grid; justify-items: center; align-content: start; gap: 2px; padding: 6px 6px 10px; border: 2px solid var(--line); border-radius: 16px; background: #ffffff; text-align: center; transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s; }
+.ball-card:hover { transform: translateY(-2px); }
+.ball-card.on { border-color: var(--ball); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ball) 35%, transparent), 0 8px 20px rgba(20, 50, 40, 0.15); }
+.ball-card.on .ball-pic { animation: ball-bob 1.2s ease-in-out infinite; }
+.ball-pic { width: 76px; height: 76px; }
+.ball-card b { font-family: var(--display); font-size: 17px; }
+.ball-power { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+.ball-text { font-size: 11px; line-height: 1.35; color: var(--muted); }
+.ball-chosen { margin: 0 0 14px; font-size: 13px; color: var(--muted); min-height: 1.2em; }
+@keyframes ball-bob { 50% { transform: translateY(-4px) rotate(-6deg); } }
+.powerups button.special { --ball: #ffd54f; }
+.powerups button.special.ready { box-shadow: var(--shadow), 0 0 0 2px var(--ball), 0 0 20px var(--ball); }
+@media (max-width: 640px) {
+  .ball-text { display: none; }
+  .ball-pic { width: 60px; height: 60px; }
+  .powerups { flex-wrap: wrap; }
+}
